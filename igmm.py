@@ -7,62 +7,13 @@ from __future__ import division
 
 import math, random
 import numpy as np
-import numpy.random as npr
-from numpy.linalg import inv, slogdet
-from scipy.special import gammaln
+from numpy.linalg import slogdet
 import argparse
 import sys
 
-from common import Constants
+from common import Constants, MultivariateStudentT
 from common import State
-from common import invwishartrand, logNormalize, sampleIndex
-
-def generateData(Lambda, alpha):
-    means = []
-    sigmas = []
-    
-    num_comp = 4
-    dim = 2
-    nu = dim
-    Lambda = Lambda * np.identity(dim)
-    #sigma = np.identity(dim)
-    #priormeans = np.array(range(num_comp)) * 20
-    for t in range(num_comp):
-        sigma = invwishartrand(nu, Lambda)
-        sigmas.append(sigma)
-        #mu = np.array(random.sample(range(60), 2))
-        mu = np.zeros(2)
-        mean = npr.multivariate_normal(mu, sigma)
-        means.append(mean)
-    #prop = npr.dirichlet([1] * num_comp, 1)[0]
-    data = []
-    labels = []
-    K = 0
-    for i in range(100):
-        comp = random.randrange(num_comp)
-        point = npr.multivariate_normal(means[comp], sigma)
-        data.append(point)
-        labels.append(comp)
-    return np.array(data), labels, means, sigmas
-
-
-class MultivariateStudentT(object):
-    
-    def __init__(self, d, nu, mu, Lambda):
-        self.nu = nu
-        self.d = d
-        self.mu = mu
-        self.precision = inv(Lambda)
-        self.logdet = slogdet(Lambda)[1]
-        self.Z = gammaln(nu / 2) + d / 2 * (math.log(nu) + math.log(math.pi)) - gammaln((nu + d) / 2)
-        
-        
-    def __call__(self, x):
-        diff = (x - self.mu)
-        term = 1 / self.nu * np.dot(np.dot(diff.T, self.precision), diff)[0][0]
-        second = -(self.nu + self.d) / 2 * math.log(1 + term)
-        prob = -0.5 * self.logdet + second
-        return  prob - self.Z
+from common import logNormalize, sampleIndex
 
         
 class IGMMState(State):

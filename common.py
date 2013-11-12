@@ -8,7 +8,7 @@ import math, random
 from numpy.linalg import inv, slogdet, cholesky
 from scipy.stats import chi2
 import numpy.random as npr
-from scipy.special import multigammaln
+from scipy.special import multigammaln, gammaln
 from scipy.misc import logsumexp
 from numpy import trace, dot, ones
 import numpy as np
@@ -46,6 +46,19 @@ def sampleIndex(probs):
             return i
     assert False
     
+def mylogsumexp(probs):
+    probs = np.array(probs)
+    a = np.amax(probs)
+    return a + np.log(np.exp(probs - a).sum())
+
+def logmvstprob(x, mu, nu, d, Lambda):
+    diff = x - mu
+    prob = gammaln((nu + d) / 2)
+    prob -= gammaln(nu / 2)
+    prob -= d / 2 * (math.log(nu) + math.log(math.pi))
+    prob -= 0.5 * slogdet(Lambda)[1]
+    prob -= (nu + d) / 2. * math.log(1 + 1. / nu * np.dot(np.dot(diff.T, inv(Lambda)), diff)[0][0])
+    return prob
 
 class LoginvWishartPdf(object):
     
@@ -72,6 +85,24 @@ class MultivariateNormalLikelihood(object):
         prob = -0.5 * np.multiply(ddM, precision).sum()
         Z = N * (self.partialZ - 0.5 * logdet)
         return prob - Z
+    
+class MultivariateStudentT(object):
+    
+    def __init__(self, d, nu, mu, Lambda):
+        self.nu = nu
+        self.d = d
+        self.mu = mu
+        self.precision = inv(Lambda)
+        self.logdet = slogdet(Lambda)[1]
+        self.Z = gammaln(nu / 2) + d / 2 * (math.log(nu) + math.log(math.pi)) - gammaln((nu + d) / 2)
+        
+        
+    def __call__(self, x):
+        diff = (x - self.mu)
+        term = 1 / self.nu * np.dot(np.dot(diff.T, self.precision), diff)[0][0]
+        second = -(self.nu + self.d) / 2 * math.log(1 + term)
+        prob = -0.5 * self.logdet + second
+        return  prob - self.Z
     
 class Constants(object):
         
@@ -126,7 +157,7 @@ class State(object):
             ll = self.mvNormalLL(self.s[t], self.ss[t], self.counts[t], mu, precision, self.logdet[t])
             self.cluster_likelihood[t] = ll
             paramprob = self.loginvWishartPdf(precision, precdet)
-            paramprob += self.mvNormalLL(mu, dot(mu, mu.transpose()), 1, self.con.mu0, self.con.kappa0 * precision, self.d * math.log(self.con.kappa0) + self.logdet[t])
+            paramprob += self.mvNormalLL(mu, dot(mu, mu.T), 1, self.con.mu0, self.con.kappa0 * precision, self.d * math.log(self.con.kappa0) + precdet)
             self.paramprobs[t] = paramprob
                 
     def sampleNewParams(self, t):
@@ -138,9 +169,24 @@ class State(object):
         precision = wishartrand(nun, inv(lambdan))
         mu = npr.multivariate_normal(mun.T[0], inv(kappan * precision))[:,None]
         return mu, precision
+    
+    def assertCounts(self):
+        for t in xrange(self.K):
+            assert self.counts[t] == (self.assignments == t).sum()
+            
+    def assertAssignments(self):
+        for i, followers in enumerate(self.sit_behind):
+            t = self.assignments[i]
+            for item in followers:
+                if self.assignments[item] != t:
+                    print t, self.assignments[item], item
+                    assert self.assignments[item] == t
 
     def numClusters(self):
         return self.K
 
     def histogram(self):
         return ' '.join(map(str, self.counts[:self.K]))
+    
+    def getIndices(self, t):
+        return [i for i in xrange(self.n) if self.assignments[i] == t]
