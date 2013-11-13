@@ -107,7 +107,7 @@ class MultivariateStudentT(object):
 class Constants(object):
         
     def __init__(self, dim, mean, alpha, Lambda, pruning, kappa, a=1, priorth=-10, seq=False):
-        self.nu0 = dim + 1
+        self.nu0 = 2 * dim + 1
         self.mu0 = mean
         self.alpha = alpha
         self.logalpha = math.log(alpha)

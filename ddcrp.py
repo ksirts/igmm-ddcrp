@@ -147,28 +147,6 @@ class DDCRPState(State):
             if self.counts[oldt] == 0:
                 self.K -= 1
                 self.updateData(oldt)
-        '''    
-        if newtable:
-            table = self.K
-            self.K += 1
-
-        elif newtable:
-            mu, precision = self.sampleNewParams(table)
-            self.mu[table] = mu
-            self.precision[table] = precision
-            self.logdet[table] = slogdet(precision)[1]
-            ll = self.mvNormalLL(self.s[table], self.ss[table], self.counts[table], mu, precision, self.logdet[table])
-            self.cluster_likelihood[table] = ll
-            self.paramprobs[table] = self.logWishartPdf(precision) + \
-                    self.mvNormalLL(mu, np.dot(mu, mu.transpose()), 1, self.con.mu0, self.con.kappa0 * precision, self.d * math.log(self.con.kappa0) + self.logdet[table])
-            ll = self.mvNormalLL(s, ss, len(followset), self.mu[oldtable], self.precision[oldtable], self.logdet[oldtable])
-            self.cluster_likelihood[oldtable] -= ll
-        elif table != oldtable:
-            ll = self.mvNormalLL(s, ss, len(followset), self.mu[oldtable], self.precision[oldtable], self.logdet[oldtable])
-            self.cluster_likelihood[oldtable] -= ll
-            ll = self.mvNormalLL(s, ss, len(followset), self.mu[table], self.precision[table], self.logdet[table])
-            self.cluster_likelihood[table] += ll
-     '''   
         
             
     def removeItem(self, i, followset, s, ss):
@@ -223,12 +201,24 @@ class DDCRPState(State):
         probs = self.probs[:n]
         probs.fill(0.)
 
+        otherll = 0
+        tables = set()
+        for k, table in enumerate(self.assignments):
+            if k not in followset:
+                otherll += self.mvNormalLL(self.data[k][:,None], self.dd[k], 1, self.mu[table], self.precision[table], self.logdet[table])
+                if table not in tables:
+                    tables.add(table)
+                    param = self.loginvWishartPdf(self.precision[table], self.logdet[table])
+                    param += self.mvNormalLL(self.mu[table], np.dot(self.mu[table], self.mu[table].T), 1, self.con.mu0, self.con.kappa0 * self.precision[table], self.d * math.log(self.con.kappa0) + self.logdet[table])
+                    assert param == self.paramprobs[table]
+                    otherll += param
+
+        newll = 0
         for j in xrange(n):
             prior = self.prior[i,j]
             
             t = self.assignments[j]
-            #newtable = (j in followset and oldt not in followset)
-            #jointable = (t != oldt)
+            '''
             ll = 0
             tables = set()
             lls = Counter()
@@ -242,15 +232,23 @@ class DDCRPState(State):
                         param = self.loginvWishartPdf(self.precision[table], self.logdet[table])
                         param += self.mvNormalLL(self.mu[table], np.dot(self.mu[table], self.mu[table].T), 1, self.con.mu0, self.con.kappa0 * self.precision[table], self.d * math.log(self.con.kappa0) + self.logdet[table])
                         ll += param
+            assert ll == otherll
+            '''
+            ll = otherll
             if t == -1:
-                ll += self.integrateOverParameters(len(followset), s, ss)
+                if newll == 0:
+                    newll = self.integrateOverParameters(len(followset), s, ss)
+                ll += newll
             else:
-                l = self.mvNormalLL(s, ss, len(followset), self.mu[t], self.precision[t], self.logdet[t])
-                lls[t] += l
+                l = llcache[t]
+                if l == 0:
+                    l = self.mvNormalLL(s, ss, len(followset), self.mu[t], self.precision[t], self.logdet[t])
+                    llcache[t] = l
                 ll += l
                 if t not in tables:
                     param = self.loginvWishartPdf(self.precision[t], self.logdet[t])
                     param += self.mvNormalLL(self.mu[t], np.dot(self.mu[t], self.mu[t].T), 1, self.con.mu0, self.con.kappa0 * self.precision[t], self.d * math.log(self.con.kappa0) + self.logdet[t])
+                    assert param == self.paramprobs[t]
                     ll += param                           
             probs[j] = prior + ll
             '''
@@ -343,8 +341,8 @@ class DDCRPState(State):
 
 if __name__ == '__main__':
     
-    #random.seed(1)
-    #np.random.seed(1)
+    random.seed(1)
+    np.random.seed(1)
     parser = argparse.ArgumentParser(description='infinite Gaussian Mixture Model')
     parser.add_argument('-D', '--data', help='data file name')
     parser.add_argument('-O', '--out', default="hypothesis", help='output file name')
@@ -385,7 +383,7 @@ if __name__ == '__main__':
     if args.vocab:
         vocab = open(args.vocab).read().split()
     else:
-        vocab = range(data.shape[0])
+        vocab = map(str, range(data.shape[0]))
 
     mean = np.mean(data, axis=0)[:,None]
     if args.dist is not None:
@@ -417,6 +415,6 @@ if __name__ == '__main__':
     with open(args.out, 'w') as f:
         for i, item in enumerate(state.assignments):
             f.write(vocab[i] + '\t' + str(item) + '\n')
-            #f.write(str(i) + '\t' + str(item) + '\n')
+
     
 

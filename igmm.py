@@ -45,16 +45,6 @@ class IGMMState(State):
             self.dd[i] = np.dot(d, d.T)
             self.ss[ind] += self.dd[i]
             self.integrated[i] = self.mvStudentT(d)
-            '''
-            kappan = self.con.kappa0 + 1
-            mun = (self.con.kappa0 * self.con.mu0 + d) / kappan
-            lambdan = self.con.lambda0 + self.dd[i] + self.con.kappa0_outermu0 - kappan * np.dot(mun, mun.T)
-            
-            integrated2 = self.d / 2 * math.log(self.con.kappa0) + self.con.nu0 / 2 * slogdet(self.con.lambda0)[1]
-            integrated2 -= self.d / 2 * math.log(math.pi) + self.d / 2 * math.log(self.con.kappa0 + 1) + (self.con.nu0 + 1) / 2 * slogdet(lambdan)[1]
-            for j in range(1, self.d + 1):
-                integrated2 += gammaln((self.con.nu0 + 2 - j) / 2) - gammaln((self.con.nu0 + 1 - j) / 2)
-            '''
  
         self.probs = np.zeros(self.con.pruningfactor)    
         
@@ -166,7 +156,10 @@ if __name__ == '__main__':
 
     data = np.load(args.data)
     mean = np.mean(data, axis=0)[:,None]
-    vocab = open(args.vocab).read().split()
+    if args.vocab:
+        vocab = open(args.vocab).read().split()
+    else:
+        vocab = map(str, range(data.shape[0]))
 
     con = Constants(data.shape[1], mean, args.alpha, args.Lambda, args.pruning, args.kappa)
     state = IGMMState(vocab, np.array(data), con)
@@ -191,6 +184,5 @@ if __name__ == '__main__':
 
     with open(args.out, 'w') as f:
         for i, item in enumerate(state.assignments):
-            #f.write(vocab[i] + '\t' + str(item) + '\n')
-            f.write(str(i) + '\t' + str(item) + '\n')
+            f.write(vocab[i] + '\t' + str(item) + '\n')
 
