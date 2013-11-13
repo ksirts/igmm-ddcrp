@@ -54,8 +54,10 @@ class IGMMState(State):
         random.shuffle(permuted)
         for i in permuted:
             self.removeItem(i)
+            assert self.counts.sum() == self.n - 1
             newt = self.sample(i)
             self.addItem(i, newt)
+            assert self.counts.sum() == self.n
 
                 
     def removeItem(self, i):
@@ -90,13 +92,13 @@ class IGMMState(State):
             self.assignments = [t if x==self.K else x for x in self.assignments]
         self.mu[self.K].fill(0.)
         self.precision[self.K].fill(0.)
-        self.logdet[self.K].fill(0.)
+        self.logdet[self.K] = 0.
         self.s[self.K].fill(0)
         self.ss[self.K].fill(0.)
-        self.counts[self.K].fill(0)
-        self.countsgammaln[self.K].fill(0.)
-        self.cluster_likelihood[self.K].fill(0.)
-        self.paramprobs[self.K].fill(0.)
+        self.counts[self.K] = 0.
+        self.countsgammaln[self.K] = 0.
+        self.cluster_likelihood[self.K] = 0.
+        self.paramprobs[self.K] = 0.
         
     
     def addItem(self, i, t):
@@ -125,49 +127,17 @@ class IGMMState(State):
         ss = self.dd[i]
         
         probs = []
-        probs2 = []
         for t in range(self.K):
             prior = math.log(self.counts[t])
-            ll = 0
-            tables = set()
-            for k, table in enumerate(self.assignments):
-                if k != i:
-                    ll += self.mvNormalLL(self.data[k][:,None], self.dd[k], 1, self.mu[table], self.precision[table], self.logdet[table])
-                    if table not in tables:
-                        tables.add(table)
-                        param = self.loginvWishartPdf(self.precision[table], self.logdet[table])
-                        param += self.mvNormalLL(self.mu[table], np.dot(self.mu[table], self.mu[table].T), 1, self.con.mu0, self.con.kappa0 * self.precision[table], self.d * math.log(self.con.kappa0) + self.logdet[table])
-                        ll += param
-            newll = self.mvNormalLL(s, ss, 1, self.mu[t], self.precision[t], self.logdet[t])
-            if t not in tables:
-                param = self.loginvWishartPdf(self.precision[table], self.logdet[table])
-                param += self.mvNormalLL(self.mu[table], np.dot(self.mu[table], self.mu[table].T), 1, self.con.mu0, self.con.kappa0 * self.precision[table], self.d * math.log(self.con.kappa0) + self.logdet[table])
-                newll += param
-            probs.append(ll + newll + prior)
-            #ll2 = self.posteriorPredictive(i, t)
-            probs2.append(prior + newll)
+            
+            ll = self.mvNormalLL(s, ss, 1, self.mu[t], self.precision[t], self.logdet[t])
+            probs.append(prior + ll)
         if self.K < self.con.pruningfactor:
             prior = self.con.logalpha
-            ll = 0
-            tables = set()
-            for k, table in enumerate(self.assignments):
-                if k != i:
-                    ll += self.mvNormalLL(self.data[k][:,None], self.dd[k], 1, self.mu[table], self.precision[table], self.logdet[table])
-                    if table not in tables:
-                        tables.add(table)
-                        param = self.loginvWishartPdf(self.precision[table], self.logdet[table])
-                        param += self.mvNormalLL(self.mu[table], np.dot(self.mu[table], self.mu[table].T), 1, self.con.mu0, self.con.kappa0 * self.precision[table], self.d * math.log(self.con.kappa0) + self.logdet[table])
-                        ll += param
 
-            newll = self.integrated[i]
-            newll2 = self.integrateOverParameters(1, self.data[i][:,None],self.dd[i])    
-            if abs(newll - newll2) > 1e-10:
-                pass        
-            probs.append(ll + newll + prior)
-            probs2.append(prior + newll2)
+            ll = self.integrated[i]     
+            probs.append(prior + ll)
         normed = logNormalize(probs)
-        normed2 = logNormalize(probs2)
-        np.testing.assert_allclose(normed, normed2)
         return sampleIndex(normed)    
     
     def logprob(self):
@@ -177,8 +147,8 @@ class IGMMState(State):
         return prior, base, ll 
 
 if __name__ == '__main__':
-    random.seed(1)
-    np.random.seed(1)
+    #random.seed(1)
+    #np.random.seed(1)
     parser = argparse.ArgumentParser(description='infinite Gaussian Mixture Model')
     parser.add_argument('-D', '--data', help='data file name')
     parser.add_argument('-O', '--out', help='output file name')
