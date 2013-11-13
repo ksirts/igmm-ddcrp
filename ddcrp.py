@@ -178,20 +178,8 @@ class DDCRPState(State):
             newt, newf = self.sample(i, oldt, oldf, followset, s, ss)
             self.addItem(i, newf, oldf, newt, oldt, followset, s, ss)
                 
-                
-    def integrateOverParameters(self, n, s, ss):       
-        kappan = self.con.kappa0 + n
-        nun = self.con.nu0 + n
-        mun = (self.con.kappa0 * self.con.mu0 + s) / kappan
-        lambdan = self.con.lambda0 + ss + self.con.kappa0_outermu0 - kappan * np.dot(mun, mun.T)
-            
-        ll = self.d / 2 * math.log(self.con.kappa0) + self.con.nu0 / 2 * slogdet(self.con.lambda0)[1]
-        ll -= n * self.d / 2 * math.log(math.pi) + self.d / 2 * math.log(kappan) + nun / 2 * slogdet(lambdan)[1]
-        for j in range(1, self.d + 1):
-            ll += gammaln((nun + 1 - j) / 2) - gammaln((self.con.nu0 + 1 - j) / 2)
-        return ll
                
-    # 95% of cumulative time, including 40% inside here alone. can probably avoid reallocated memory, wonder if that would help.
+
     def sample(self, i, oldt, oldf, followset, s, ss):      
         llcache = np.zeros(self.K)
         n = self.n
@@ -200,7 +188,9 @@ class DDCRPState(State):
 
         probs = self.probs[:n]
         probs.fill(0.)
-
+        
+        probs2 = np.zeros(n)
+        '''
         otherll = 0
         tables = set()
         for k, table in enumerate(self.assignments):
@@ -212,45 +202,34 @@ class DDCRPState(State):
                     param += self.mvNormalLL(self.mu[table], np.dot(self.mu[table], self.mu[table].T), 1, self.con.mu0, self.con.kappa0 * self.precision[table], self.d * math.log(self.con.kappa0) + self.logdet[table])
                     assert param == self.paramprobs[table]
                     otherll += param
+        '''
 
-        newll = 0
         for j in xrange(n):
             prior = self.prior[i,j]
             
             t = self.assignments[j]
-            '''
-            ll = 0
+            otherll = 0
             tables = set()
-            lls = Counter()
             for k, table in enumerate(self.assignments):
                 if k not in followset:
-                    l= self.mvNormalLL(self.data[k][:,None], self.dd[k], 1, self.mu[table], self.precision[table], self.logdet[table])
-                    lls[table] += l
-                    ll += l
+                    otherll += self.mvNormalLL(self.data[k][:,None], self.dd[k], 1, self.mu[table], self.precision[table], self.logdet[table])
                     if table not in tables:
                         tables.add(table)
                         param = self.loginvWishartPdf(self.precision[table], self.logdet[table])
                         param += self.mvNormalLL(self.mu[table], np.dot(self.mu[table], self.mu[table].T), 1, self.con.mu0, self.con.kappa0 * self.precision[table], self.d * math.log(self.con.kappa0) + self.logdet[table])
-                        ll += param
-            assert ll == otherll
-            '''
-            ll = otherll
+                        otherll += param
             if t == -1:
-                if newll == 0:
-                    newll = self.integrateOverParameters(len(followset), s, ss)
-                ll += newll
+                ll = self.integrateOverParameters(len(followset), s, ss)
             else:
-                l = llcache[t]
-                if l == 0:
-                    l = self.mvNormalLL(s, ss, len(followset), self.mu[t], self.precision[t], self.logdet[t])
-                    llcache[t] = l
-                ll += l
+                ll = self.mvNormalLL(s, ss, len(followset), self.mu[t], self.precision[t], self.logdet[t])
                 if t not in tables:
                     param = self.loginvWishartPdf(self.precision[t], self.logdet[t])
                     param += self.mvNormalLL(self.mu[t], np.dot(self.mu[t], self.mu[t].T), 1, self.con.mu0, self.con.kappa0 * self.precision[t], self.d * math.log(self.con.kappa0) + self.logdet[t])
                     assert param == self.paramprobs[t]
-                    ll += param                           
-            probs[j] = prior + ll
+                    ll += param
+
+            probs2[j]  = prior + ll                           
+            probs[j] = prior + ll + otherll
             '''
             jointable = (t != oldtable)
             if newtable and (self.K == self.con.pruningfactor):
@@ -275,6 +254,8 @@ class DDCRPState(State):
                 probs[j] = self.prior[i, j]
             '''
         normed = np.exp(probs - logsumexp(probs))
+        normed2 = np.exp(probs2 - logsumexp(probs2))
+        np.testing.assert_allclose(normed, normed2)
         ind = sampleIndex(normed)
         table = self.assignments[ind]
         return table, ind

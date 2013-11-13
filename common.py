@@ -4,6 +4,7 @@ Created on Nov 11, 2013
 @author: kairit
 '''
 
+from __future__ import division
 import math, random
 from numpy.linalg import inv, slogdet, cholesky
 from scipy.stats import chi2
@@ -51,14 +52,6 @@ def mylogsumexp(probs):
     a = np.amax(probs)
     return a + np.log(np.exp(probs - a).sum())
 
-def logmvstprob(x, mu, nu, d, Lambda):
-    diff = x - mu
-    prob = gammaln((nu + d) / 2)
-    prob -= gammaln(nu / 2)
-    prob -= d / 2 * (math.log(nu) + math.log(math.pi))
-    prob -= 0.5 * slogdet(Lambda)[1]
-    prob -= (nu + d) / 2. * math.log(1 + 1. / nu * np.dot(np.dot(diff.T, inv(Lambda)), diff)[0][0])
-    return prob
 
 class LoginvWishartPdf(object):
     
@@ -99,15 +92,24 @@ class MultivariateStudentT(object):
         
     def __call__(self, x):
         diff = (x - self.mu)
-        term = 1 / self.nu * np.dot(np.dot(diff.T, self.precision), diff)[0][0]
+        term = 1. / self.nu * np.dot(np.dot(diff.T, self.precision), diff)[0][0]
         second = -(self.nu + self.d) / 2 * math.log(1 + term)
         prob = -0.5 * self.logdet + second
         return  prob - self.Z
     
+def logmvstprob(x, mu, nu, d, Lambda):
+    diff = x - mu
+    prob = gammaln((nu + d) / 2)
+    prob -= gammaln(nu / 2)
+    prob -= d / 2 * (math.log(nu) + math.log(math.pi))
+    prob -= 0.5 * slogdet(Lambda)[1]
+    prob -= (nu + d) / 2. * math.log(1 + 1. / nu * np.dot(np.dot(diff.T, inv(Lambda)), diff)[0][0])
+    return prob
+    
 class Constants(object):
         
     def __init__(self, dim, mean, alpha, Lambda, pruning, kappa, a=1, priorth=-10, seq=False):
-        self.nu0 = 2 * dim + 1
+        self.nu0 = dim + 1
         self.mu0 = mean
         self.alpha = alpha
         self.logalpha = math.log(alpha)
@@ -169,6 +171,33 @@ class State(object):
         precision = wishartrand(nun, inv(lambdan))
         mu = npr.multivariate_normal(mun.T[0], inv(kappan * precision))[:,None]
         return mu, precision
+    
+    def integrateOverParameters(self, n, s, ss):       
+        kappan = self.con.kappa0 + n
+        nun = self.con.nu0 + n
+        mun = (self.con.kappa0 * self.con.mu0 + s) / kappan
+        lambdan = self.con.lambda0 + ss + self.con.kappa0_outermu0 - kappan * np.dot(mun, mun.T)
+            
+        ll = self.d / 2 * math.log(self.con.kappa0) + self.con.nu0 / 2 * slogdet(self.con.lambda0)[1]
+        ll -= n * self.d / 2 * math.log(math.pi) + self.d / 2 * math.log(kappan) + nun / 2 * slogdet(lambdan)[1]
+        for j in range(1, self.d + 1):
+            ll += gammaln((nun + 1 - j) / 2) - gammaln((self.con.nu0 + 1 - j) / 2)
+        return ll
+    
+    def posteriorPredictive(self, i, t):
+        s = self.s[t] + self.data[i][:,None]
+        ss = self.ss[t] + self.dd[i]
+        num = self.integrateOverParameters(self.counts[t] + 1, s, ss)
+        denom = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+        res = num - denom
+        
+        n = self.counts[t] 
+        kappan = self.con.kappa0 + n
+        nun = self.con.nu0 + n
+        mun = (self.con.kappa0 * self.con.mu0 + self.s[t]) / kappan
+        lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.dot(mun, mun.T)
+        res2 = self.d / 2. * math.log(kappan) + nun / 2.
+        return res
     
     def assertCounts(self):
         for t in xrange(self.K):
