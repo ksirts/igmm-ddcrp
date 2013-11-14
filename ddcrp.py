@@ -13,7 +13,7 @@ import sys
 from scipy.misc import logsumexp
 from collections import Counter
 
-from common import Constants
+from common import Constants, MultivariateStudentT
 from common import State
 from common import sampleIndex
          
@@ -29,6 +29,10 @@ class DDCRPState(State):
             self.prior = np.zeros((self.n, self.n)) + math.log(con.alpha) * np.identity(self.n)
         self.follow = -1 * np.ones(self.n, dtype=np.int)
         self.sit_behind = [set() for _ in xrange(self.n)]
+        
+        std_nu = self.con.nu0 - self.d + 1
+        std_S = (self.con.kappa0 + 1) / (self.con.kappa0 * std_nu) * self.con.lambda0
+        self.mvStudentT = MultivariateStudentT(self.d, std_nu, self.con.mu0, std_S)
         
     def initialize(self, rand, initfn=None):
         super(DDCRPState, self).initialize()
@@ -50,8 +54,8 @@ class DDCRPState(State):
                     following = i
                 self.follow[i] = following
                 self.sit_behind[following].add(i)
-                item = self.data[i][None,:]
-                self.dd[i] = np.dot(item.T, item)
+                item = self.data[i][:, None]
+                self.dd[i] = np.dot(item, item.T)
                 
             # Incrementally merge all indices that belong to the same cluster
             tablemap = dict(zip(range(self.n), [set([i]) for i in range(self.n)]))
@@ -67,9 +71,8 @@ class DDCRPState(State):
                     t = self.K
                     for j in cluster:
                         self.assignments[j] = t
-                        item = self.data[j][:,None]
-                        self.s[t] += item
-                        self.ss[t] += np.dot(item, item.T)
+                        self.s[t] += self.data[j][:,None]
+                        self.ss[t] += self.dd[j]
                     self.counts[t] += len(cluster)
                     self.K += 1
         else:
@@ -80,7 +83,10 @@ class DDCRPState(State):
                     tag = int(tag)
                     self.assignments[i] = tag
                     self.counts[tag] += 1
-                    self.integrated[i] = self.mvStudentT(self.data[i])
+                    item = self.data[i][:,None]
+                    self.dd[i] = np.dot(item, item.T)
+                    self.s[tag] += item
+                    self.ss[tag] += self.dd[i]
                     i += 1
                     self.K = max(self.K, tag+1)
             
@@ -110,25 +116,11 @@ class DDCRPState(State):
             if i != j:
                 self.sitBehind(j, ret)
             
-    def addItem(self, i, newf, oldf, newt, oldt, followset, s, ss):       
+    def addItem(self, i, newf, oldf, newt, oldt, followset, s, ss):    
+             
         if newt == -1:
             newt = self.K
             self.K += 1
-            mu, precision = self.sampleNewParams(newt)
-            self.mu[newt] = mu
-            self.precision[newt] = precision
-            precdet = slogdet(precision)[1]
-            self.logdet[newt] = precdet
-            paramprob = self.loginvWishartPdf(precision, precdet)
-            paramprob += self.mvNormalLL(mu, np.dot(mu, mu.T), 1, self.con.mu0, self.con.kappa0 * precision, self.d * math.log(self.con.kappa0) + precdet)
-            self.paramprobs[newt] = paramprob
-            
-        for j in followset:
-            self.assignments[j] = newt
-        self.follow[i] = newf
-        self.sit_behind[newf].add(i)
-
-        if newt != oldt:
             n = len(followset)
             self.counts[oldt] -= n
             self.counts[newt] += n
@@ -138,7 +130,31 @@ class DDCRPState(State):
             self.s[newt] += s
             self.ss[oldt] -= ss
             self.ss[newt] += ss
-                
+            mu, precision = self.sampleNewParams(newt)
+            self.mu[newt] = mu
+            self.precision[newt] = precision
+            precdet = slogdet(precision)[1]
+            self.logdet[newt] = precdet
+            paramprob = self.loginvWishartPdf(precision, precdet)
+            paramprob += self.mvNormalLL(mu, np.dot(mu, mu.T), 1, self.con.mu0, self.con.kappa0 * precision, self.d * math.log(self.con.kappa0) + precdet)
+            self.paramprobs[newt] = paramprob
+        elif newt != oldt:
+            n = len(followset)
+            self.counts[oldt] -= n
+            self.counts[newt] += n
+            assert self.counts[oldt] >= 0
+            assert self.counts[newt] > 0
+            self.s[oldt] -= s
+            self.s[newt] += s
+            self.ss[oldt] -= ss
+            self.ss[newt] += ss
+            
+        for j in followset:
+            self.assignments[j] = newt
+        self.follow[i] = newf
+        self.sit_behind[newf].add(i)
+
+        if newt != oldt:                
             oldll = self.mvNormalLL(s, ss, n, self.mu[oldt], self.precision[oldt], self.logdet[oldt])
             newll = self.mvNormalLL(s, ss, n, self.mu[newt], self.precision[newt], self.logdet[newt])
             self.cluster_likelihood[oldt] -= oldll
@@ -162,8 +178,7 @@ class DDCRPState(State):
 
     def resampleData(self):
         permuted = range(self.n)
-        if not self.con.seq:
-            random.shuffle(permuted)
+        random.shuffle(permuted)
         for i in permuted:
             followset = self.followSet(i)
             s = self.temps
@@ -177,6 +192,10 @@ class DDCRPState(State):
             oldt, oldf, = self.removeItem(i, followset, s, ss)
             newt, newf = self.sample(i, oldt, oldf, followset, s, ss)
             self.addItem(i, newf, oldf, newt, oldt, followset, s, ss)
+            
+            #prob = sum(self.logprob())
+            #igmm_prob = sum(self.igmm_logprob())
+            #print prob, igmm_prob
                 
                
 
@@ -188,75 +207,61 @@ class DDCRPState(State):
 
         probs = self.probs[:n]
         probs.fill(0.)
+
+        tableprobs = [[] for j in range(self.K + 1)]
+        tableprobs2 = []
         
-        probs2 = np.zeros(n)
-        '''
-        otherll = 0
-        tables = set()
-        for k, table in enumerate(self.assignments):
-            if k not in followset:
-                otherll += self.mvNormalLL(self.data[k][:,None], self.dd[k], 1, self.mu[table], self.precision[table], self.logdet[table])
-                if table not in tables:
-                    tables.add(table)
-                    param = self.loginvWishartPdf(self.precision[table], self.logdet[table])
-                    param += self.mvNormalLL(self.mu[table], np.dot(self.mu[table], self.mu[table].T), 1, self.con.mu0, self.con.kappa0 * self.precision[table], self.d * math.log(self.con.kappa0) + self.logdet[table])
-                    assert param == self.paramprobs[table]
-                    otherll += param
-        '''
+        s = self.data[i][:,None]
+        ss = self.dd[i]
+        
+        for t in range(self.K):
+            if self.counts[t] - (t==oldt) == 0:
+                continue
+            prior = math.log(self.counts[t] - (t==oldt))
+            
+            ll = self.mvNormalLL(s, ss, 1, self.mu[t], self.precision[t], self.logdet[t])
+            tableprobs2.append(prior + ll)
+        if self.K < self.con.pruningfactor:
+            prior = self.con.logalpha
+
+            ll = self.mvStudentT(s)     
+            tableprobs2.append(prior + ll)
+        
+        newll = 0
 
         for j in xrange(n):
             prior = self.prior[i,j]
             
             t = self.assignments[j]
-            otherll = 0
-            tables = set()
-            for k, table in enumerate(self.assignments):
-                if k not in followset:
-                    otherll += self.mvNormalLL(self.data[k][:,None], self.dd[k], 1, self.mu[table], self.precision[table], self.logdet[table])
-                    if table not in tables:
-                        tables.add(table)
-                        param = self.loginvWishartPdf(self.precision[table], self.logdet[table])
-                        param += self.mvNormalLL(self.mu[table], np.dot(self.mu[table], self.mu[table].T), 1, self.con.mu0, self.con.kappa0 * self.precision[table], self.d * math.log(self.con.kappa0) + self.logdet[table])
-                        otherll += param
+            
             if t == -1:
-                ll = self.integrateOverParameters(len(followset), s, ss)
+                ll = newll
+                if ll == 0:
+                    ll = newll = self.integrateOverParameters(len(followset), s, ss)
+                prob = prior + ll
+                tableprobs[self.K].append(prob)
             else:
-                ll = self.mvNormalLL(s, ss, len(followset), self.mu[t], self.precision[t], self.logdet[t])
-                if t not in tables:
-                    param = self.loginvWishartPdf(self.precision[t], self.logdet[t])
-                    param += self.mvNormalLL(self.mu[t], np.dot(self.mu[t], self.mu[t].T), 1, self.con.mu0, self.con.kappa0 * self.precision[t], self.d * math.log(self.con.kappa0) + self.logdet[t])
-                    assert param == self.paramprobs[t]
-                    ll += param
-
-            probs2[j]  = prior + ll                           
-            probs[j] = prior + ll + otherll
-            '''
-            jointable = (t != oldtable)
-            if newtable and (self.K == self.con.pruningfactor):
-                probs[j] = float('-inf')
-            elif newtable:
-                if newtableLL == 0.0:
-                    newtableLL = self.integrateOverParameters(followset, s, ss) - oldll
-                #import pdb; pdb.set_trace()
-                probs[j] = newtableLL + self.prior[i,j]
-            elif jointable:
                 ll = llcache[t]
                 if ll == 0:
-                    #ll = self.likelihoodF_Jacob(followset, t)
-                    #l = self.likelihoodF2(followset, t, s, ss)
-                    newll = self.mvNormalLL(s, ss, len(followset), self.mu[t], self.precision[t], self.logdet[t])
-                    ll = newll - oldll
-                    if self.counts[oldtable] == len(followset):
-                        ll -= self.paramprobs[oldtable]
+                    if t == oldt and self.counts[t] == len(followset):
+                        ll = self.integrateOverParameters(len(followset), s, ss)
+                    else:
+                        ll = self.mvNormalLL(s, ss, len(followset), self.mu[t], self.precision[t], self.logdet[t])
                     llcache[t] = ll
-                probs[j] = ll + self.prior[i,j]
-            else:
-                probs[j] = self.prior[i, j]
-            '''
+                prob = prior + ll
+                tableprobs[t].append(prob)
+
+            probs[j]  = prior + ll                           
+        w = 0
+        tableprobs = np.array([logsumexp(np.array(x)) if len(x) else float("-inf") for x in tableprobs])
+        tablenormed = np.exp(tableprobs - logsumexp(tableprobs))
+        tablenormed2 = np.exp(tableprobs2 - logsumexp(tableprobs2))
+
         normed = np.exp(probs - logsumexp(probs))
-        normed2 = np.exp(probs2 - logsumexp(probs2))
-        np.testing.assert_allclose(normed, normed2)
+        #np.testing.assert_allclose(normed, normed2)
         ind = sampleIndex(normed)
+        tableind = sampleIndex(tablenormed)
+        tableind2 = sampleIndex(tablenormed2)
         table = self.assignments[ind]
         return table, ind
         
@@ -301,16 +306,8 @@ class DDCRPState(State):
         assert not math.isinf(prior)
         for t in range(self.K):
             prior += gammaln(self.counts[t])
-        baseprob = 0.0
-        likelihood = 0.0
-        for t in range(self.K):
-            # Should we compute here posterior probability with updated hyperparameters?
-            # But this does not conform with the generative story
-            baseprob += self.logWishartPdf(self.precision[t])
-            mu = self.mu[t][:,None]
-            baseprob += self.mvNormalLL(mu, np.dot(mu, mu.T), 1, self.con.mu0, self.precision[t], self.logdet[t])
-            likelihood += self.mvNormalLL(self.s[t], self.ss[t], self.counts[t], mu, self.precision[t], self.logdet[t])
-        assert not math.isinf(baseprob)
+        likelihood = self.cluster_likelihood.sum()
+        baseprob = self.paramprobs.sum()
         return prior, baseprob, likelihood
     
     def numClusters(self):
@@ -318,12 +315,122 @@ class DDCRPState(State):
     
     def histogram(self):
         return ' '.join(map(str, self.counts[:self.K]))
+    
+class DDCRPStateIntegrated(DDCRPState):
+    def initialize(self, rand, init):
+        super(DDCRPStateIntegrated, self).initialize(rand, init)
+        
+        for t in range(self.K):
+            self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+            
+            
+    def removeItem(self, i, followset, s, ss):
+        f = self.follow[i]
+        t = self.assignments[i]
+        self.sit_behind[f].remove(i)
+        self.follow[i] = i
+        self.s[t] -= s
+        self.ss[t] -= s
+        self.counts[t] -= len(followset)
+        self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+        if f not in followset:
+            for j in followset:
+                self.assignments[j] = -1
+        if self.counts[t] == 0:
+            self.removeCluster(t)
+        return t, f
+    
+    def addItem(self, i, newf, oldf, newt, oldt, followset, s, ss):    
+             
+        if newt == -1:
+            newt = self.K
+            self.K += 1
+            
+        n = len(followset)
+        self.counts[newt] += n
+        assert self.counts[oldt] >= 0
+        assert self.counts[newt] > 0
+        self.s[newt] += s
+        self.ss[newt] += ss
+        self.denom[newt] = self.integrateOverParameters(self.counts[newt], self.s[newt], self.ss[newt])
+            
+        for j in followset:
+            self.assignments[j] = newt
+        self.follow[i] = newf
+        self.sit_behind[newf].add(i)
+        
+    def removeCluster(self, t):
+        assert self.counts[t] == 0
+        self.K -= 1
+        if t != self.K:
+            self.counts[t] = self.counts[self.K]
+            assert self.counts[t] > 0
+            self.s[t] = self.s[self.K]
+            self.ss[t] = self.ss[self.K]
+            self.denom[t] = self.denom[self.K]
+            self.assignments = np.array([t if x==self.K else x for x in self.assignments])
+                
+
+        self.counts[self.K] = 0
+        self.s[self.K].fill(0.)
+        self.ss[self.K].fill(0.)
+        self.denom[self.K] = 0.
+        
+    def sample(self, i, oldt, oldf, followset, s, ss):      
+        llcache = np.zeros(self.K)
+        n = self.n
+        if self.con.seq:
+            n = i + 1
+
+        probs = self.probs[:n]
+        probs.fill(0.)
+        
+        newll = 0
+
+        for j in xrange(n):
+            prior = self.prior[i,j]
+            
+            t = self.assignments[j]
+            
+            if t == -1:
+                ll = newll
+                if ll == 0:
+                    ll = newll = self.integrateOverParameters(len(followset), s, ss)
+            else:
+                ll = llcache[t]
+                if ll == 0:
+                    if t == oldt and self.counts[t] == len(followset):
+                        ll = self.integrateOverParameters(len(followset), s, ss)
+                    else:
+                        ll = self.posteriorPredictive(i, t)
+                    llcache[t] = ll
+
+            probs[j]  = prior + ll                           
+
+        normed = np.exp(probs - logsumexp(probs))
+        #np.testing.assert_allclose(normed, normed2)
+        ind = sampleIndex(normed)
+        table = self.assignments[ind]
+        return table, ind
+    
+    def logprob(self):
+        prior = 0.0
+        for i, j in enumerate(self.follow):
+            prior += self.prior[i, j]
+        ll = 0.0
+        for t in range(self.K):
+            ll += self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+
+        return prior, 0, ll
+    
+    def resampleParams(self):
+        pass
        
 
 if __name__ == '__main__':
     
-    random.seed(1)
-    np.random.seed(1)
+    #random.seed(1)
+    #np.random.seed(1)
     parser = argparse.ArgumentParser(description='infinite Gaussian Mixture Model')
     parser.add_argument('-D', '--data', help='data file name')
     parser.add_argument('-O', '--out', default="hypothesis", help='output file name')
@@ -339,6 +446,7 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--threshold', type=float, default=-10, help="sample only from the elements whose prior exceeds this threshold")
     parser.add_argument('-S', '--seq', action="store_true", help="if set, then use sequential CRP")
     parser.add_argument('-R', '--rand', action="store_true", help="if set then initialize the followings randomly, otherwise initialize everybody to follow itself")
+    parser.add_argument('-E', '---explicit', action='store_true', help="if set, then sample explicit cluster parameters")
     args = parser.parse_args()
     
     print
@@ -377,8 +485,12 @@ if __name__ == '__main__':
         pruning = len(vocab)
     
     con = Constants(data.shape[1], mean, args.alpha, args.Lambda, pruning, args.kappa, args.b, args.threshold, args.seq)
-    state = DDCRPState(vocab, data, con, dist)
+    if args.explicit:
+        state = DDCRPState(vocab, data, con, dist)
+    else:
+        state = DDCRPStateIntegrated(vocab, data, con, dist)
     
+    #import pdb; pdb.set_trace()
     state.initialize(args.rand, args.init)
     state.resampleParams()
 

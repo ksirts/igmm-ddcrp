@@ -14,6 +14,24 @@ from scipy.misc import logsumexp
 from numpy import trace, dot, ones
 import numpy as np
 
+def cholupdate(R,x,sign):
+    p = np.size(x)
+    x = x.T
+    for k in range(p):
+        if sign == '+':
+            r = np.sqrt(R[k,k]**2 + x[k]**2)
+        elif sign == '-':
+            r = np.sqrt(R[k,k]**2 - x[k]**2)
+        c = r/R[k,k]
+        s = x[k]/R[k,k]
+        R[k,k] = r
+        if sign == '+':
+            R[k,k+1:p] = (R[k,k+1:p] + s*x[k+1:p])/c
+        elif sign == '-':
+            R[k,k+1:p] = (R[k,k+1:p] - s*x[k+1:p])/c
+        x[k+1:p]= c*x[k+1:p] - s*R[k, k+1:p]
+    return R
+
 def invwishartrand(nu, phi):
     invphi = inv(phi)
     wishdraw = wishartrand(nu, invphi)
@@ -53,17 +71,19 @@ def mylogsumexp(probs):
     return a + np.log(np.exp(probs - a).sum())
 
 
+
 class LoginvWishartPdf(object):
     
     def __init__(self, Lambda, nu):
         self.invlambda = inv(Lambda)
+        self.Lambda = Lambda
         self.nu = nu
         self.d = Lambda.shape[0]
         self.Z = nu * self.d / 2 * math.log(2) - nu / 2 * slogdet(Lambda)[1] + multigammaln(nu / 2, self.d)
         
     def __call__(self, x, xdet):
         prob = (self.nu + self.d + 1) / 2 * xdet
-        prob -= 0.5 * trace(dot(self.invlambda, x))
+        prob -= 0.5 * trace(dot(self.Lambda, x))
         prob -= self.Z
         return prob
     
@@ -148,6 +168,7 @@ class State(object):
         self.ss = np.zeros((self.con.pruningfactor, self.d, self.d), np.float)
         self.cluster_likelihood = np.zeros(self.con.pruningfactor, np.float)
         self.paramprobs = np.zeros(self.con.pruningfactor, np.float)
+        self.denom = np.zeros(self.con.pruningfactor)
     
     def resampleParams(self):
         for t in range(self.K):
@@ -184,19 +205,13 @@ class State(object):
             ll += gammaln((nun + 1 - j) / 2) - gammaln((self.con.nu0 + 1 - j) / 2)
         return ll
     
-    def posteriorPredictive(self, i, t):
-        s = self.s[t] + self.data[i][:,None]
-        ss = self.ss[t] + self.dd[i]
+    def posteriorPredictive(self, s_, ss_, t):
+        s = self.s[t] + s_
+        ss = self.ss[t] + ss_
         num = self.integrateOverParameters(self.counts[t] + 1, s, ss)
-        denom = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
-        res = num - denom
-        
-        n = self.counts[t] 
-        kappan = self.con.kappa0 + n
-        nun = self.con.nu0 + n
-        mun = (self.con.kappa0 * self.con.mu0 + self.s[t]) / kappan
-        lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.dot(mun, mun.T)
-        res2 = self.d / 2. * math.log(kappan) + nun / 2.
+        #denom = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+        #assert (denom - self.denom[t]) < 1e-10
+        res = num - self.denom[t]
         return res
     
     def assertCounts(self):

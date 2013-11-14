@@ -7,13 +7,13 @@ from __future__ import division
 
 import math, random
 import numpy as np
-from numpy.linalg import slogdet
+from numpy.linalg import slogdet, cholesky
 import argparse
 import sys
 
 from common import Constants, MultivariateStudentT
 from common import State
-from common import logNormalize, sampleIndex, logmvstprob
+from common import logNormalize, sampleIndex, cholupdate
 
         
 class IGMMState(State):
@@ -145,6 +145,94 @@ class IGMMState(State):
         prior =  self.K * self.con.logalpha + self.countsgammaln.sum()
         base = self.paramprobs.sum()
         return prior, base, ll 
+    
+class IGMMStateIntegrated(IGMMState):
+    
+    def initialize(self):
+        super(IGMMStateIntegrated, self).initialize()
+        
+        for t in range(self.K):
+            self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+            #n = self.counts[t]
+            #kappan = self.con.kappa0 + n
+            #nun = self.con.nu0 + n
+            #mun = (self.con.kappa0 * self.con.mu0 + s) / kappan
+            #lambdan = self.con.lambda0 + ss + self.con.kappa0_outermu0 - kappan * np.dot(mun, mun.T)
+            #chol = cholesky(lamban)
+            #self.logdet[t] = chol
+        
+    
+    def removeItem(self, i):
+        t = self.assignments[i]
+        item = self.data[i][:,None]
+        self.s[t] -= item
+        self.ss[t] -= self.dd[i]
+        self.counts[t] -= 1
+        assert self.counts[t] >= 0
+        if self.counts[t] > 0:
+            self.countsgammaln[t] -= math.log(self.counts[t])
+
+        self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+
+        if self.counts[t] == 0:
+            self.removeCluster(t)
+            
+    def removeCluster(self, t):
+        self.K -= 1
+        if t != self.K:
+            self.s[t] = self.s[self.K]
+            self.ss[t] = self.ss[self.K]
+            self.counts[t] = self.counts[self.K]
+            self.countsgammaln[t] = self.countsgammaln[self.K]
+            self.denom[t] = self.denom[self.K]
+            self.assignments = [t if x==self.K else x for x in self.assignments]
+        self.s[self.K].fill(0)
+        self.ss[self.K].fill(0.)
+        self.counts[self.K] = 0.
+        self.countsgammaln[self.K] = 0.
+        self.denom[self.K] = 0.
+        
+    def addItem(self, i, t):
+        self.s[t] += self.data[i][:,None]
+        self.ss[t] += self.dd[i]
+        if self.counts[t] > 0:
+            self.countsgammaln[t] += math.log(self.counts[t])
+        self.counts[t] += 1
+        self.assignments[i] = t
+        self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+        
+        if t == self.K:
+            self.K += 1
+            
+            
+    def sample(self, i):
+        probs = []
+        for t in range(self.K):
+            prior = math.log(self.counts[t])
+            
+            ll = self.posteriorPredictive(self.data[i][:,None], self.dd[i])
+            probs.append(prior + ll)
+        if self.K < self.con.pruningfactor:
+            prior = self.con.logalpha
+
+            ll = self.integrated[i]     
+            probs.append(prior + ll)
+        normed = logNormalize(probs)
+        return sampleIndex(normed) 
+    
+    def logprob(self):
+        prior =  self.K * self.con.logalpha + self.countsgammaln.sum()
+        ll = 0.0
+        for t in range(self.K):
+            ll += self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+
+        return prior, 0, ll 
+
+    def resampleParams(self):
+        pass
+            
+
+    
 
 if __name__ == '__main__':
     #random.seed(1)
@@ -158,6 +246,7 @@ if __name__ == '__main__':
     parser.add_argument('-P', '--pruning', type=int, default=100, help="maximum number of clusters induced")
     parser.add_argument('-I', '--iter', type=int, default=100, help="number of Gibbs iterations")
     parser.add_argument('-k', '--kappa', type=float, default=0.1, help="number of pseudo-observations")
+    parser.add_argument('-E', '---explicit', action='store_true', help="if set, then sample explicit cluster parameters")
     args = parser.parse_args()
 
     data = np.load(args.data)
@@ -168,14 +257,19 @@ if __name__ == '__main__':
         vocab = map(str, range(data.shape[0]))
 
     con = Constants(data.shape[1], mean, args.alpha, args.Lambda, args.pruning, args.kappa)
-    state = IGMMState(vocab, np.array(data), con)
+    if args.explicit:
+        state = IGMMState(vocab, data, con)
+    else:
+        state = IGMMStateIntegrated(vocab, data, con)
     
     state.initialize()
     state.resampleParams()
+
     prior, base, ll = state.logprob()
     prob = prior + base + ll
-    sys.stderr.write( "> iter 0:\t" + str(round(prior)) + '\t' + str(round(base)) + '\t' 
-                      + str(round(ll)) + '\t' +str(round(prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
+    sys.stderr.write( "> iter 0:\t" + str(round(prior)) + '\t' + str(round(base)) + '\t'
+                          + str(round(ll)) + '\t' +str(round(prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
+    #import pdb; pdb.set_trace()   
     for i in range(args.iter):
         state.resampleData()
         state.resampleParams()
@@ -185,10 +279,9 @@ if __name__ == '__main__':
             prob = prior + base + ll
             sys.stderr.write( "> iter " + str(i+1) + ":\t" + str(round(prior)) + '\t' + str(round(base)) + '\t' 
                       + str(round(ll)) + '\t' +str(round(prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
+            
         
-    
-
-    with open(args.out, 'w') as f:
-        for i, item in enumerate(state.assignments):
-            f.write(vocab[i] + '\t' + str(item) + '\n')
+            with open(args.out + "_" + str(i), 'w') as f:
+                for j, item in enumerate(state.assignments):
+                    f.write(vocab[j] + '\t' + str(item) + '\n')
 
