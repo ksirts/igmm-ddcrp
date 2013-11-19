@@ -6,16 +6,17 @@ Created on Aug 9, 2013
 from __future__ import division
 import math, random
 import numpy as np
-from numpy.linalg import slogdet
+from numpy.linalg import slogdet, cholesky
 from scipy.special import gammaln
 import argparse
 import sys
 from scipy.misc import logsumexp
-from collections import Counter
 
 from common import Constants, MultivariateStudentT
 from common import State
 from common import sampleIndex
+
+from choldate import cholupdate, choldowndate
          
 
         
@@ -37,7 +38,7 @@ class DDCRPState(State):
     def initialize(self, rand, initfn=None):
         super(DDCRPState, self).initialize()
 
-        self.temps = np.zeros((self.d, 1), np.float)
+        self.temps = np.zeros(self.d, np.float)
         self.tempss = np.zeros((self.d, self.d), np.float)
         self.probs = np.zeros(self.n)
 
@@ -54,8 +55,7 @@ class DDCRPState(State):
                     following = i
                 self.follow[i] = following
                 self.sit_behind[following].add(i)
-                item = self.data[i][:, None]
-                self.dd[i] = np.dot(item, item.T)
+                self.dd[i] = np.outer(self.data[i], self.data[i])
                 
             # Incrementally merge all indices that belong to the same cluster
             tablemap = dict(zip(range(self.n), [set([i]) for i in range(self.n)]))
@@ -71,7 +71,7 @@ class DDCRPState(State):
                     t = self.K
                     for j in cluster:
                         self.assignments[j] = t
-                        self.s[t] += self.data[j][:,None]
+                        self.s[t] += self.data[j]
                         self.ss[t] += self.dd[j]
                     self.counts[t] += len(cluster)
                     self.K += 1
@@ -83,9 +83,8 @@ class DDCRPState(State):
                     tag = int(tag)
                     self.assignments[i] = tag
                     self.counts[tag] += 1
-                    item = self.data[i][:,None]
-                    self.dd[i] = np.dot(item, item.T)
-                    self.s[tag] += item
+                    self.dd[i] = np.outer(self.data[i], self.data[i])
+                    self.s[tag] += self.data[i]
                     self.ss[tag] += self.dd[i]
                     i += 1
                     self.K = max(self.K, tag+1)
@@ -135,8 +134,7 @@ class DDCRPState(State):
             self.precision[newt] = precision
             precdet = slogdet(precision)[1]
             self.logdet[newt] = precdet
-            paramprob = self.loginvWishartPdf(precision, precdet)
-            paramprob += self.mvNormalLL(mu, np.dot(mu, mu.T), 1, self.con.mu0, self.con.kappa0 * precision, self.d * math.log(self.con.kappa0) + precdet)
+            paramprob = self.param_probs(newt)
             self.paramprobs[newt] = paramprob
         elif newt != oldt:
             n = len(followset)
@@ -186,17 +184,12 @@ class DDCRPState(State):
             s.fill(0.)
             ss.fill(0.)
             for j in followset:
-                s += self.data[j][:,None]
+                s += self.data[j]
                 ss += self.dd[j]
             
             oldt, oldf, = self.removeItem(i, followset, s, ss)
             newt, newf = self.sample(i, oldt, oldf, followset, s, ss)
-            self.addItem(i, newf, oldf, newt, oldt, followset, s, ss)
-            
-            #prob = sum(self.logprob())
-            #igmm_prob = sum(self.igmm_logprob())
-            #print prob, igmm_prob
-                
+            self.addItem(i, newf, oldf, newt, oldt, followset, s, ss)              
                
 
     def sample(self, i, oldt, oldf, followset, s, ss):      
@@ -207,25 +200,6 @@ class DDCRPState(State):
 
         probs = self.probs[:n]
         probs.fill(0.)
-
-        tableprobs = [[] for j in range(self.K + 1)]
-        tableprobs2 = []
-        
-        s = self.data[i][:,None]
-        ss = self.dd[i]
-        
-        for t in range(self.K):
-            if self.counts[t] - (t==oldt) == 0:
-                continue
-            prior = math.log(self.counts[t] - (t==oldt))
-            
-            ll = self.mvNormalLL(s, ss, 1, self.mu[t], self.precision[t], self.logdet[t])
-            tableprobs2.append(prior + ll)
-        if self.K < self.con.pruningfactor:
-            prior = self.con.logalpha
-
-            ll = self.mvStudentT(s)     
-            tableprobs2.append(prior + ll)
         
         newll = 0
 
@@ -238,8 +212,6 @@ class DDCRPState(State):
                 ll = newll
                 if ll == 0:
                     ll = newll = self.integrateOverParameters(len(followset), s, ss)
-                prob = prior + ll
-                tableprobs[self.K].append(prob)
             else:
                 ll = llcache[t]
                 if ll == 0:
@@ -248,20 +220,12 @@ class DDCRPState(State):
                     else:
                         ll = self.mvNormalLL(s, ss, len(followset), self.mu[t], self.precision[t], self.logdet[t])
                     llcache[t] = ll
-                prob = prior + ll
-                tableprobs[t].append(prob)
 
             probs[j]  = prior + ll                           
-        w = 0
-        tableprobs = np.array([logsumexp(np.array(x)) if len(x) else float("-inf") for x in tableprobs])
-        tablenormed = np.exp(tableprobs - logsumexp(tableprobs))
-        tablenormed2 = np.exp(tableprobs2 - logsumexp(tableprobs2))
 
         normed = np.exp(probs - logsumexp(probs))
         #np.testing.assert_allclose(normed, normed2)
         ind = sampleIndex(normed)
-        tableind = sampleIndex(tablenormed)
-        tableind2 = sampleIndex(tablenormed2)
         table = self.assignments[ind]
         return table, ind
         
@@ -300,15 +264,11 @@ class DDCRPState(State):
         baseprob = self.paramprobs.sum()
         return prior, baseprob, likelihood 
     
-    def igmm_logprob(self):
-        #self.resampleParams()
+    def igmm_prior(self):
         prior =  self.K * math.log(self.con.alpha)
-        assert not math.isinf(prior)
         for t in range(self.K):
             prior += gammaln(self.counts[t])
-        likelihood = self.cluster_likelihood.sum()
-        baseprob = self.paramprobs.sum()
-        return prior, baseprob, likelihood
+        return prior
     
     def numClusters(self):
         return self.K
@@ -321,7 +281,17 @@ class DDCRPStateIntegrated(DDCRPState):
         super(DDCRPStateIntegrated, self).initialize(rand, init)
         
         for t in range(self.K):
-            self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+            #self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+            n = self.counts[t]
+            kappan = self.con.kappa0 + n
+            mun = (self.con.kappa0 * self.con.mu0 + self.s[t]) / kappan
+            #lambdan_part = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0
+            lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
+            # Don't remove the last part from cholesky, because when updating the composition, we would have to add it anyway
+            # in order to replace it with the updated part
+            #chol = cholesky(lambdan_part).T
+            self.logdet[t] = slogdet(lambdan)[1]
+            #self.cholesky[t] = chol
             
             
     def removeItem(self, i, followset, s, ss):
@@ -330,12 +300,19 @@ class DDCRPStateIntegrated(DDCRPState):
         self.sit_behind[f].remove(i)
         self.follow[i] = i
         self.s[t] -= s
-        self.ss[t] -= s
+        self.ss[t] -= ss
         self.counts[t] -= len(followset)
-        self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
-        if f not in followset:
-            for j in followset:
-                self.assignments[j] = -1
+        if self.counts[t] > 0:
+            #self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+            n = self.counts[t]
+            kappan = self.con.kappa0 + n
+            mun = (self.con.kappa0 * self.con.mu0 + self.s[t]) / kappan
+            lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
+            self.logdet[t] = slogdet(lambdan)[1]
+            #for ind in followset:
+            #    choldowndate(self.cholesky[t], self.data[ind].copy())
+        for j in followset:
+            self.assignments[j] = -1
         if self.counts[t] == 0:
             self.removeCluster(t)
         return t, f
@@ -345,6 +322,7 @@ class DDCRPStateIntegrated(DDCRPState):
         if newt == -1:
             newt = self.K
             self.K += 1
+            self.cholesky[newt] = cholesky(self.con.lambda0 + self.con.kappa0_outermu0).T
             
         n = len(followset)
         self.counts[newt] += n
@@ -352,7 +330,15 @@ class DDCRPStateIntegrated(DDCRPState):
         assert self.counts[newt] > 0
         self.s[newt] += s
         self.ss[newt] += ss
-        self.denom[newt] = self.integrateOverParameters(self.counts[newt], self.s[newt], self.ss[newt])
+        #self.denom[newt] = self.integrateOverParameters(self.counts[newt], self.s[newt], self.ss[newt])
+
+        n = self.counts[newt]
+        kappan = self.con.kappa0 + n
+        mun = (self.con.kappa0 * self.con.mu0 + self.s[newt]) / kappan
+        lambdan = self.con.lambda0 + self.ss[newt] + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
+        self.logdet[newt] = slogdet(lambdan)[1]
+        #for ind in followset:
+        #    cholupdate(self.cholesky[newt], self.data[ind].copy())
             
         for j in followset:
             self.assignments[j] = newt
@@ -367,14 +353,18 @@ class DDCRPStateIntegrated(DDCRPState):
             assert self.counts[t] > 0
             self.s[t] = self.s[self.K]
             self.ss[t] = self.ss[self.K]
-            self.denom[t] = self.denom[self.K]
+            #self.denom[t] = self.denom[self.K]
+            #self.cholesky[t] = self.cholesky[self.K]
+            self.logdet[t] = self.logdet[self.K]
             self.assignments = np.array([t if x==self.K else x for x in self.assignments])
                 
 
         self.counts[self.K] = 0
         self.s[self.K].fill(0.)
         self.ss[self.K].fill(0.)
-        self.denom[self.K] = 0.
+        #self.denom[self.K] = 0.
+        #self.cholesky[self.K].fill(0.)
+        self.logdet[self.K] = 0.
         
     def sample(self, i, oldt, oldf, followset, s, ss):      
         llcache = np.zeros(self.K)
@@ -399,10 +389,7 @@ class DDCRPStateIntegrated(DDCRPState):
             else:
                 ll = llcache[t]
                 if ll == 0:
-                    if t == oldt and self.counts[t] == len(followset):
-                        ll = self.integrateOverParameters(len(followset), s, ss)
-                    else:
-                        ll = self.posteriorPredictive(i, t)
+                    ll = self.posteriorPredictive(followset, s, ss, t)
                     llcache[t] = ll
 
             probs[j]  = prior + ll                           
@@ -420,6 +407,7 @@ class DDCRPStateIntegrated(DDCRPState):
         ll = 0.0
         for t in range(self.K):
             ll += self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+        #assert ll == self.denom.sum()
 
         return prior, 0, ll
     
@@ -474,7 +462,7 @@ if __name__ == '__main__':
     else:
         vocab = map(str, range(data.shape[0]))
 
-    mean = np.mean(data, axis=0)[:,None]
+    mean = np.mean(data, axis=0)
     if args.dist is not None:
         dist = np.load(args.dist)
     else:
@@ -496,14 +484,18 @@ if __name__ == '__main__':
 
     prior, baseprob, likelihood = state.logprob()
     prob = prior + baseprob +  likelihood
-    sys.stderr.write( "> iter 0:\t" +  str(round(prior)) + '\t' + str(round(baseprob)) + '\t' + str(round(likelihood)) + '\t' + str(round(prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
+    igmm_prior = state.igmm_prior()
+    igmm_prob = igmm_prior + baseprob + likelihood
+    sys.stderr.write( "> iter 0:\t" +  str(round(prior)) + '\t' + str(round(baseprob)) + '\t' + str(round(likelihood)) + '\t' + str(round(prob)) + '\t' + str(round(igmm_prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
     for i in range(args.iter):
         state.resampleData()
         state.resampleParams()
-        if (i + 1) % 1 == 0:
+        if (i + 1) % 10 == 0:
             prior, baseprob, likelihood = state.logprob()
             prob = prior + baseprob + likelihood
-            sys.stderr.write("> iter " + str(i+1) +":\t" + str(round(prior)) + '\t' + str(round(baseprob)) + '\t' + str(round(likelihood)) + '\t' + str(round(prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
+            igmm_prior = state.igmm_prior()
+            igmm_prob = igmm_prior + baseprob + likelihood
+            sys.stderr.write("> iter " + str(i+1) +":\t" + str(round(prior)) + '\t' + str(round(baseprob)) + '\t' + str(round(likelihood)) + '\t' + str(round(prob)) + '\t' + str(round(igmm_prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
 
     with open(args.out, 'w') as f:
         for i, item in enumerate(state.assignments):

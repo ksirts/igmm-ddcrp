@@ -14,9 +14,12 @@ from scipy.misc import logsumexp
 from numpy import trace, dot, ones
 import numpy as np
 
+from choldate import cholupdate, choldowndate
+
+'''
 def cholupdate(R,x,sign):
     p = np.size(x)
-    x = x.T
+    x = x.T[0]
     for k in range(p):
         if sign == '+':
             r = np.sqrt(R[k,k]**2 + x[k]**2)
@@ -31,6 +34,7 @@ def cholupdate(R,x,sign):
             R[k,k+1:p] = (R[k,k+1:p] - s*x[k+1:p])/c
         x[k+1:p]= c*x[k+1:p] - s*R[k, k+1:p]
     return R
+'''
 
 def invwishartrand(nu, phi):
     invphi = inv(phi)
@@ -57,7 +61,7 @@ def logNormalize(probs):
     return np.exp(probs - Z)
 
 def sampleIndex(probs):
-    p = random.random() * sum(probs)
+    p = random.random() * probs.sum()
     sum_ = 0
     for i in range(len(probs)):
         sum_ += probs[i]
@@ -94,7 +98,7 @@ class MultivariateNormalLikelihood(object):
         
 
     def __call__(self, s, ss, N, mu, precision, logdet):
-        ddM = ss + N * np.dot(mu, mu.T) - 2 * np.dot(s, mu.T)
+        ddM = ss + N * np.outer(mu, mu) - 2 * np.outer(s, mu)
         prob = -0.5 * np.multiply(ddM, precision).sum()
         Z = N * (self.partialZ - 0.5 * logdet)
         return prob - Z
@@ -111,14 +115,14 @@ class MultivariateStudentT(object):
         
         
     def __call__(self, x):
-        diff = (x - self.mu)
+        diff = (x - self.mu)[:,None]
         term = 1. / self.nu * np.dot(np.dot(diff.T, self.precision), diff)[0][0]
         second = -(self.nu + self.d) / 2 * math.log(1 + term)
         prob = -0.5 * self.logdet + second
         return  prob - self.Z
     
 def logmvstprob(x, mu, nu, d, Lambda):
-    diff = x - mu
+    diff = x - mu[:,None]
     prob = gammaln((nu + d) / 2)
     prob -= gammaln(nu / 2)
     prob -= d / 2 * (math.log(nu) + math.log(math.pi))
@@ -140,9 +144,9 @@ class Constants(object):
         self.invlambda0 = inv(self.lambda0)
         self.priorth = priorth
         self.seq = seq
-        self.kappa0_outermu0 = kappa * np.dot(mean, mean.T)
-        self.logdet = slogdet(self.invlambda0)[1]
-        self.precision = self.kappa0 * (self.nu0 - dim - 1) / (self.kappa0 + 1) * self.invlambda0
+        self.kappa0_outermu0 = kappa * np.outer(mean, mean)
+        self.logdet = slogdet(self.lambda0)[1]
+        #self.precision = self.kappa0 * (self.nu0 - dim - 1) / (self.kappa0 + 1) * self.invlambda0
         self.changeParams = 10
 
 
@@ -159,16 +163,17 @@ class State(object):
         
     def initialize(self):
         self.K = 0
-        self.mu = np.zeros((self.con.pruningfactor, self.d, 1), np.float)
+        self.mu = np.zeros((self.con.pruningfactor, self.d), np.float)
         self.precision = np.zeros((self.con.pruningfactor, self.d, self.d), np.float)
         self.logdet = np.zeros(self.con.pruningfactor, np.float)
         self.counts = np.zeros(self.con.pruningfactor, np.int)
         self.dd = np.zeros((self.n, self.d, self.d), dtype=float)
-        self.s = np.zeros((self.con.pruningfactor, self.d, 1), np.float)
+        self.s = np.zeros((self.con.pruningfactor, self.d), np.float)
         self.ss = np.zeros((self.con.pruningfactor, self.d, self.d), np.float)
         self.cluster_likelihood = np.zeros(self.con.pruningfactor, np.float)
         self.paramprobs = np.zeros(self.con.pruningfactor, np.float)
         self.denom = np.zeros(self.con.pruningfactor)
+        self.cholesky = np.zeros((self.con.pruningfactor, self.d, self.d), np.float)
     
     def resampleParams(self):
         for t in range(self.K):
@@ -179,8 +184,7 @@ class State(object):
             self.logdet[t] = precdet
             ll = self.mvNormalLL(self.s[t], self.ss[t], self.counts[t], mu, precision, self.logdet[t])
             self.cluster_likelihood[t] = ll
-            paramprob = self.loginvWishartPdf(precision, precdet)
-            paramprob += self.mvNormalLL(mu, dot(mu, mu.T), 1, self.con.mu0, self.con.kappa0 * precision, self.d * math.log(self.con.kappa0) + precdet)
+            paramprob = self.param_probs(t)
             self.paramprobs[t] = paramprob
                 
     def sampleNewParams(self, t):
@@ -188,31 +192,88 @@ class State(object):
         nun = self.con.nu0 + n
         kappan = self.con.kappa0 + n
         mun = (self.con.kappa0 * self.con.mu0 + self.s[t]) / kappan
-        lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * dot(mun, mun.T)
+        lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
         precision = wishartrand(nun, inv(lambdan))
-        mu = npr.multivariate_normal(mun.T[0], inv(kappan * precision))[:,None]
+        mu = npr.multivariate_normal(mun, inv(kappan * precision))
         return mu, precision
     
-    def integrateOverParameters(self, n, s, ss):       
+    def integrateOverParameters(self, n, s, ss, logdet=None):       
         kappan = self.con.kappa0 + n
         nun = self.con.nu0 + n
-        mun = (self.con.kappa0 * self.con.mu0 + s) / kappan
-        lambdan = self.con.lambda0 + ss + self.con.kappa0_outermu0 - kappan * np.dot(mun, mun.T)
+        if logdet is None:
+            mun = (self.con.kappa0 * self.con.mu0 + s) / kappan
+            lambdan = self.con.lambda0 + ss + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
+            logdet = slogdet(lambdan)[1]
             
-        ll = self.d / 2 * math.log(self.con.kappa0) + self.con.nu0 / 2 * slogdet(self.con.lambda0)[1]
-        ll -= n * self.d / 2 * math.log(math.pi) + self.d / 2 * math.log(kappan) + nun / 2 * slogdet(lambdan)[1]
+        ll = self.d / 2 * math.log(self.con.kappa0) + self.con.nu0 / 2 * self.con.logdet
+        ll -= n * self.d / 2 * math.log(math.pi) + self.d / 2 * math.log(kappan) + nun / 2 * logdet
         for j in range(1, self.d + 1):
             ll += gammaln((nun + 1 - j) / 2) - gammaln((self.con.nu0 + 1 - j) / 2)
         return ll
     
-    def posteriorPredictive(self, s_, ss_, t):
+    def posteriorPredictive(self, followset, s_, ss_, t):
+
+        n = len(followset)
         s = self.s[t] + s_
         ss = self.ss[t] + ss_
-        num = self.integrateOverParameters(self.counts[t] + 1, s, ss)
+        '''
+        num = self.integrateOverParameters(self.counts[t] + n, s, ss)
         #denom = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
-        #assert (denom - self.denom[t]) < 1e-10
+        #assert abs(denom - self.denom[t]) < 1e-5
         res = num - self.denom[t]
-        return res
+        '''
+
+        n_ = self.counts[t]
+        kappan = self.con.kappa0 + n_
+        nun = self.con.nu0 + n_
+
+        '''
+        mun = (self.con.kappa0 * self.con.mu0 + self.s[t]) / kappan
+        lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
+        '''
+
+        kappa_star = self.con.kappa0 + self.counts[t] + n
+        nu_star = self.con.nu0 + self.counts[t] + n
+
+        mu_star = (self.con.kappa0 * self.con.mu0 + s) / kappa_star
+        lambda_star = self.con.lambda0 + ss + self.con.kappa0_outermu0 - kappa_star * np.outer(mu_star, mu_star)
+
+        '''
+        choln = self.cholesky[t].copy()
+        choldowndate(choln, math.sqrt(kappan) * mun.copy())
+
+        chol_star = self.cholesky[t].copy()    
+        #lambdatest = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0
+        #choltest = cholesky(lambdatest).T
+        #assert(np.all((choltest - chol_star)**2 < 1e-16))
+        for i in followset:
+            cholupdate(chol_star, self.data[i].copy())
+            #lambdatest += self.dd[i]
+            #choltest = cholesky(lambdatest).T
+            #assert(np.all((choltest - chol_star)**2 < 1e-16))
+        choldowndate(chol_star, math.sqrt(kappa_star) * mu_star)
+        #lambdatest -= kappa_star * np.outer(mu_star, mu_star)
+        #choltest = cholesky(lambdatest).T
+        #assert(np.all((choltest - chol_star)**2 < 1e-16))
+        
+
+        res3 = self.d / 2 * math.log(kappan) + nun / 2 * 2* np.log(choln.diagonal()).sum()
+        res3 -= n * self.d/2 * math.log(math.pi) + self.d / 2 * math.log(kappa_star) + nu_star / 2 * 2 * np.log(chol_star.diagonal()).sum()
+        for j in range(1, self.d + 1):
+            res3 += gammaln((nu_star + 1 - j) / 2) - gammaln((nun + 1 - j) / 2)
+        '''
+
+        res2 = self.d / 2 * math.log(kappan) + nun / 2 * self.logdet[t]
+        res2 -= n * self.d/2 * math.log(math.pi) + self.d / 2 * math.log(kappa_star) + nu_star / 2 * slogdet(lambda_star)[1]
+        for j in range(1, self.d + 1):
+            res2 += gammaln((nu_star + 1 - j) / 2) - gammaln((nun + 1 - j) / 2)
+        '''
+        if abs(res - res2) > 1e-5:
+            pass
+        assert abs(res - res2) < 1e-5
+        assert abs(res - res3) < 1e-5
+        '''
+        return res2
     
     def assertCounts(self):
         for t in xrange(self.K):
@@ -234,3 +295,10 @@ class State(object):
     
     def getIndices(self, t):
         return [i for i in xrange(self.n) if self.assignments[i] == t]
+    
+    def param_probs(self, t):
+        prob = (self.con.nu0 + self.d + 2) / 2 * self.logdet[t]
+        diff = (self.mu[t] - self.con.mu0)[:,None]
+        prob -= self.con.kappa0 / 2 * np.dot(np.dot(diff.T, self.precision[t]), diff)
+        prob -= 0.5 * np.trace(np.dot(self.precision[t], self.con.lambda0))
+        return prob

@@ -13,7 +13,9 @@ import sys
 
 from common import Constants, MultivariateStudentT
 from common import State
-from common import logNormalize, sampleIndex, cholupdate
+from common import logNormalize, sampleIndex
+
+from choldate import cholupdate, choldowndate
 
         
 class IGMMState(State):
@@ -40,11 +42,10 @@ class IGMMState(State):
                 self.countsgammaln[ind] += math.log(self.counts[ind])
             self.assignments[i] = ind
             self.counts[ind] += 1
-            d = self.data[i][:,None]
-            self.s[ind] += d
-            self.dd[i] = np.dot(d, d.T)
+            self.s[ind] += self.data[i]
+            self.dd[i] = np.outer(self.data[i], self.data[i])
             self.ss[ind] += self.dd[i]
-            self.integrated[i] = self.mvStudentT(d)
+            self.integrated[i] = self.mvStudentT(self.data[i])
  
         self.probs = np.zeros(self.con.pruningfactor)    
         
@@ -62,12 +63,11 @@ class IGMMState(State):
                 
     def removeItem(self, i):
         t = self.assignments[i]
-        item = self.data[i][:,None]
-        self.s[t] -= item
+        self.s[t] -= self.data[i]
         self.ss[t] -= self.dd[i]
         self.counts[t] -= 1
         assert self.counts[t] >= 0
-        ll = self.mvNormalLL(item, self.dd[i], 1, self.mu[t], self.precision[t], self.logdet[t])
+        ll = self.mvNormalLL(self.data[i], self.dd[i], 1, self.mu[t], self.precision[t], self.logdet[t])
         self.cluster_likelihood[t] -= ll
         if self.counts[t] == 0:
             assert abs(self.cluster_likelihood[t]) <= 10e-10
@@ -102,7 +102,7 @@ class IGMMState(State):
         
     
     def addItem(self, i, t):
-        self.s[t] += self.data[i][:,None]
+        self.s[t] += self.data[i]
         self.ss[t] += self.dd[i]
         if self.counts[t] > 0:
             self.countsgammaln[t] += math.log(self.counts[t])
@@ -115,15 +115,14 @@ class IGMMState(State):
             self.mu[t] = mu
             self.precision[t] = precision
             self.logdet[t] = slogdet(precision)[1] 
-            paramprob = self.loginvWishartPdf(precision, self.logdet[t])
-            paramprob += self.mvNormalLL(mu, np.dot(mu, mu.transpose()), 1, self.con.mu0, self.con.kappa0 * precision, self.d * math.log(self.con.kappa0) + self.logdet[t])
+            paramprob = self.param_probs(t)
             self.paramprobs[t] = paramprob
-        ll = self.mvNormalLL(self.data[i][:,None], self.dd[i], 1, self.mu[t], self.precision[t], self.logdet[t])
+        ll = self.mvNormalLL(self.data[i], self.dd[i], 1, self.mu[t], self.precision[t], self.logdet[t])
         self.cluster_likelihood[t] += ll
                 
         
     def sample(self, i):
-        s = self.data[i][:,None]
+        s = self.data[i]
         ss = self.dd[i]
         
         probs = []
@@ -152,27 +151,29 @@ class IGMMStateIntegrated(IGMMState):
         super(IGMMStateIntegrated, self).initialize()
         
         for t in range(self.K):
-            self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
-            #n = self.counts[t]
-            #kappan = self.con.kappa0 + n
-            #nun = self.con.nu0 + n
-            #mun = (self.con.kappa0 * self.con.mu0 + s) / kappan
-            #lambdan = self.con.lambda0 + ss + self.con.kappa0_outermu0 - kappan * np.dot(mun, mun.T)
-            #chol = cholesky(lamban)
-            #self.logdet[t] = chol
+            #self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+            n = self.counts[t]
+            kappan = self.con.kappa0 + n
+            mun = (self.con.kappa0 * self.con.mu0 + self.s[t]) / kappan
+            lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
+            self.logdet[t] = slogdet(lambdan)[1]
         
     
     def removeItem(self, i):
         t = self.assignments[i]
-        item = self.data[i][:,None]
-        self.s[t] -= item
+        self.s[t] -= self.data[i]
         self.ss[t] -= self.dd[i]
         self.counts[t] -= 1
         assert self.counts[t] >= 0
         if self.counts[t] > 0:
             self.countsgammaln[t] -= math.log(self.counts[t])
+            n = self.counts[t]
+            kappan = self.con.kappa0 + n
+            mun = (self.con.kappa0 * self.con.mu0 + self.s[t]) / kappan
+            lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
+            self.logdet[t] = slogdet(lambdan)[1]
 
-        self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+        #self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
 
         if self.counts[t] == 0:
             self.removeCluster(t)
@@ -184,22 +185,30 @@ class IGMMStateIntegrated(IGMMState):
             self.ss[t] = self.ss[self.K]
             self.counts[t] = self.counts[self.K]
             self.countsgammaln[t] = self.countsgammaln[self.K]
-            self.denom[t] = self.denom[self.K]
+            #self.denom[t] = self.denom[self.K]
+            self.logdet[t] = self.logdet[self.K]
             self.assignments = [t if x==self.K else x for x in self.assignments]
         self.s[self.K].fill(0)
         self.ss[self.K].fill(0.)
         self.counts[self.K] = 0.
         self.countsgammaln[self.K] = 0.
-        self.denom[self.K] = 0.
+        #self.denom[self.K] = 0.
+        self.logdet[self.K] = 0.
         
     def addItem(self, i, t):
-        self.s[t] += self.data[i][:,None]
+        self.s[t] += self.data[i]
         self.ss[t] += self.dd[i]
         if self.counts[t] > 0:
             self.countsgammaln[t] += math.log(self.counts[t])
         self.counts[t] += 1
         self.assignments[i] = t
-        self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+        #self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+        
+        n = self.counts[t]
+        kappan = self.con.kappa0 + n
+        mun = (self.con.kappa0 * self.con.mu0 + self.s[t]) / kappan
+        lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
+        self.logdet[t] = slogdet(lambdan)[1]
         
         if t == self.K:
             self.K += 1
@@ -209,8 +218,7 @@ class IGMMStateIntegrated(IGMMState):
         probs = []
         for t in range(self.K):
             prior = math.log(self.counts[t])
-            
-            ll = self.posteriorPredictive(self.data[i][:,None], self.dd[i])
+            ll = self.posteriorPredictive(set([i]), self.data[i], self.dd[i], t)
             probs.append(prior + ll)
         if self.K < self.con.pruningfactor:
             prior = self.con.logalpha
@@ -224,8 +232,8 @@ class IGMMStateIntegrated(IGMMState):
         prior =  self.K * self.con.logalpha + self.countsgammaln.sum()
         ll = 0.0
         for t in range(self.K):
-            ll += self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
-
+            ll += self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t], self.logdet[t])
+        #assert ll == self.denom.sum()
         return prior, 0, ll 
 
     def resampleParams(self):
@@ -248,9 +256,17 @@ if __name__ == '__main__':
     parser.add_argument('-k', '--kappa', type=float, default=0.1, help="number of pseudo-observations")
     parser.add_argument('-E', '---explicit', action='store_true', help="if set, then sample explicit cluster parameters")
     args = parser.parse_args()
+    
+    arr = np.array([[4., 2.], [3., 4.]])
+    chol = cholesky(arr).T
+    v = np.array([1., 1.])
+    arr2 = arr + np.outer(v, v)
+    chol2 = cholesky(arr2).T
+    chol3 = chol.copy()
+    cholupdate(chol3, v.copy())
 
     data = np.load(args.data)
-    mean = np.mean(data, axis=0)[:,None]
+    mean = np.mean(data, axis=0)
     if args.vocab:
         vocab = open(args.vocab).read().split()
     else:
@@ -274,14 +290,14 @@ if __name__ == '__main__':
         state.resampleData()
         state.resampleParams()
         
-        if (i + 1) % 1 == 0:
+        if (i + 1) % 10 == 0:
             prior, base, ll = state.logprob()
             prob = prior + base + ll
             sys.stderr.write( "> iter " + str(i+1) + ":\t" + str(round(prior)) + '\t' + str(round(base)) + '\t' 
                       + str(round(ll)) + '\t' +str(round(prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
             
         
-            with open(args.out + "_" + str(i), 'w') as f:
-                for j, item in enumerate(state.assignments):
-                    f.write(vocab[j] + '\t' + str(item) + '\n')
+    with open(args.out, 'w') as f:
+        for j, item in enumerate(state.assignments):
+            f.write(vocab[j] + '\t' + str(item) + '\n')
 
