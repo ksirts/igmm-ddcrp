@@ -216,21 +216,10 @@ class State(object):
         n = len(followset)
         s = self.s[t] + s_
         ss = self.ss[t] + ss_
-        '''
-        num = self.integrateOverParameters(self.counts[t] + n, s, ss)
-        #denom = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
-        #assert abs(denom - self.denom[t]) < 1e-5
-        res = num - self.denom[t]
-        '''
-
+        
         n_ = self.counts[t]
         kappan = self.con.kappa0 + n_
         nun = self.con.nu0 + n_
-
-        '''
-        mun = (self.con.kappa0 * self.con.mu0 + self.s[t]) / kappan
-        lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
-        '''
 
         kappa_star = self.con.kappa0 + self.counts[t] + n
         nu_star = self.con.nu0 + self.counts[t] + n
@@ -238,42 +227,12 @@ class State(object):
         mu_star = (self.con.kappa0 * self.con.mu0 + s) / kappa_star
         lambda_star = self.con.lambda0 + ss + self.con.kappa0_outermu0 - kappa_star * np.outer(mu_star, mu_star)
 
-        '''
-        choln = self.cholesky[t].copy()
-        choldowndate(choln, math.sqrt(kappan) * mun.copy())
-
-        chol_star = self.cholesky[t].copy()    
-        #lambdatest = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0
-        #choltest = cholesky(lambdatest).T
-        #assert(np.all((choltest - chol_star)**2 < 1e-16))
-        for i in followset:
-            cholupdate(chol_star, self.data[i].copy())
-            #lambdatest += self.dd[i]
-            #choltest = cholesky(lambdatest).T
-            #assert(np.all((choltest - chol_star)**2 < 1e-16))
-        choldowndate(chol_star, math.sqrt(kappa_star) * mu_star)
-        #lambdatest -= kappa_star * np.outer(mu_star, mu_star)
-        #choltest = cholesky(lambdatest).T
-        #assert(np.all((choltest - chol_star)**2 < 1e-16))
-        
-
-        res3 = self.d / 2 * math.log(kappan) + nun / 2 * 2* np.log(choln.diagonal()).sum()
-        res3 -= n * self.d/2 * math.log(math.pi) + self.d / 2 * math.log(kappa_star) + nu_star / 2 * 2 * np.log(chol_star.diagonal()).sum()
+        res = self.d / 2 * math.log(kappan) + nun / 2 * self.logdet[t]
+        res -= n * self.d/2 * math.log(math.pi) + self.d / 2 * math.log(kappa_star) + nu_star / 2 * slogdet(lambda_star)[1]
         for j in range(1, self.d + 1):
-            res3 += gammaln((nu_star + 1 - j) / 2) - gammaln((nun + 1 - j) / 2)
-        '''
-
-        res2 = self.d / 2 * math.log(kappan) + nun / 2 * self.logdet[t]
-        res2 -= n * self.d/2 * math.log(math.pi) + self.d / 2 * math.log(kappa_star) + nu_star / 2 * slogdet(lambda_star)[1]
-        for j in range(1, self.d + 1):
-            res2 += gammaln((nu_star + 1 - j) / 2) - gammaln((nun + 1 - j) / 2)
-        '''
-        if abs(res - res2) > 1e-5:
-            pass
-        assert abs(res - res2) < 1e-5
-        assert abs(res - res3) < 1e-5
-        '''
-        return res2
+            res += gammaln((nu_star + 1 - j) / 2) - gammaln((nun + 1 - j) / 2)
+      
+        return res
     
     def assertCounts(self):
         for t in xrange(self.K):
@@ -302,3 +261,15 @@ class State(object):
         prob -= self.con.kappa0 / 2 * np.dot(np.dot(diff.T, self.precision[t]), diff)
         prob -= 0.5 * np.trace(np.dot(self.precision[t], self.con.lambda0))
         return prob
+    
+    def param_probabilites(self):
+        return self.paramprobs.sum()
+    
+    def likelihood(self):
+        return self.cluster_likelihood.sum()
+    
+    def likelihood_int(self):
+        ll = 0.0
+        for t in range(self.K):
+            ll += self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
+        return ll

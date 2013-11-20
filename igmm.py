@@ -9,15 +9,14 @@ from __future__ import division
 
 import math, random
 import numpy as np
-from numpy.linalg import slogdet, cholesky
+from numpy.linalg import slogdet
 import optparse
-import sys
+import sys, time
 
 from common import Constants, MultivariateStudentT
 from common import State
 from common import logNormalize, sampleIndex
 
-#from choldate import cholupdate, choldowndate
 
         
 class IGMMState(State):
@@ -141,11 +140,9 @@ class IGMMState(State):
         normed = logNormalize(probs)
         return sampleIndex(normed)    
     
-    def logprob(self):
-        ll = self.cluster_likelihood.sum()
-        prior =  self.K * self.con.logalpha + self.countsgammaln.sum()
-        base = self.paramprobs.sum()
-        return prior, base, ll 
+    def prior_prob(self):
+        return self.K * self.con.logalpha + self.countsgammaln.sum()
+
     
 class IGMMStateIntegrated(IGMMState):
     
@@ -187,14 +184,12 @@ class IGMMStateIntegrated(IGMMState):
             self.ss[t] = self.ss[self.K]
             self.counts[t] = self.counts[self.K]
             self.countsgammaln[t] = self.countsgammaln[self.K]
-            #self.denom[t] = self.denom[self.K]
             self.logdet[t] = self.logdet[self.K]
             self.assignments = [t if x==self.K else x for x in self.assignments]
         self.s[self.K].fill(0)
         self.ss[self.K].fill(0.)
         self.counts[self.K] = 0.
         self.countsgammaln[self.K] = 0.
-        #self.denom[self.K] = 0.
         self.logdet[self.K] = 0.
         
     def addItem(self, i, t):
@@ -204,7 +199,6 @@ class IGMMStateIntegrated(IGMMState):
             self.countsgammaln[t] += math.log(self.counts[t])
         self.counts[t] += 1
         self.assignments[i] = t
-        #self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
         
         n = self.counts[t]
         kappan = self.con.kappa0 + n
@@ -230,13 +224,6 @@ class IGMMStateIntegrated(IGMMState):
         normed = logNormalize(probs)
         return sampleIndex(normed) 
     
-    def logprob(self):
-        prior =  self.K * self.con.logalpha + self.countsgammaln.sum()
-        ll = 0.0
-        for t in range(self.K):
-            ll += self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t], self.logdet[t])
-        #assert ll == self.denom.sum()
-        return prior, 0, ll 
 
     def resampleParams(self):
         pass
@@ -245,8 +232,7 @@ class IGMMStateIntegrated(IGMMState):
     
 
 if __name__ == '__main__':
-    #random.seed(1)
-    #np.random.seed(1)
+    start = time.clock()
     parser = optparse.OptionParser(description='infinite Gaussian Mixture Model')
     parser.add_option('-D', '--data', help='data file name')
     parser.add_option('-O', '--out', help='output file name')
@@ -258,6 +244,7 @@ if __name__ == '__main__':
     parser.add_option('-k', '--kappa', type=float, default=0.1, help="number of pseudo-observations")
     parser.add_option('-E', '--explicit', action='store_true', help="if set, then sample explicit cluster parameters")
     parser.add_option('-T', '--trace', help="name of the trace file")
+    parser.add_option('-s', '--stats', action="store_true", help="when set then show number of clusters and cluster histogram in trace")
     (args, posit) = parser.parse_args()
     
     data = np.load(args.data)
@@ -276,28 +263,66 @@ if __name__ == '__main__':
     if args.trace is None:
         tracef = sys.stdout
     else:
-        tracef = open(args.trace)
+        tracef = open(args.trace, 'w')
     
     state.initialize()
     state.resampleParams()
-
-    prior, base, ll = state.logprob()
-    prob = prior + base + ll
-    tracef.write( "> iter 0:\t" + str(round(prior)) + '\t' + str(round(base)) + '\t'
-                          + str(round(ll)) + '\t' +str(round(prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
-    #import pdb; pdb.set_trace()   
+        
+    prior, baseprob, likelihood, likelihood_int = state.prior_prob(), state.param_probabilites(), state.likelihood(), state.likelihood_int()
+    prob = prior + baseprob + likelihood
+    prob_int = prior +likelihood_int
+    
+    elapsed = time.clock() - start
+    
+    tracef.write("iter\ttime\tprior\t")
+    if args.explicit:
+        tracef.write("params\t")
+    tracef.write("llhood\ttotal\t")
+    if args.explicit:
+        tracef.write("total_int")
+    if args.stats:
+        tracef.write('\t# C\thistogram')
+    tracef.write('\n')
+    tracef.write( "> 0:\t" +  str(elapsed) + '\t' + str(round(prior)))
+    if args.explicit:
+        tracef.write('\t' + str(round(baseprob)) + '\t' + str(round(likelihood)))
+    else:
+        tracef.write('\t' + str(round(likelihood_int)))
+    tracef.write('\t' + str(round(prob)))
+    if args.explicit:
+        tracef.write('\t' + str(round(prob_int)))
+    if args.stats:
+        tracef.write('\t' + str(state.numClusters()) + '\t' + state.histogram())
+    tracef.write('\n')
+    if args.trace is not None:
+        tracef.close() 
+        
     for i in range(args.iter):
         state.resampleData()
         state.resampleParams()
         
-        if (i + 1) % 10 == 0:
-            prior, base, ll = state.logprob()
-            prob = prior + base + ll
-            tracef.write( "> iter " + str(i+1) + ":\t" + str(round(prior)) + '\t' + str(round(base)) + '\t' 
-                      + str(round(ll)) + '\t' +str(round(prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
-            
-    if args.trace is not None:
-        tracef.close()
+        if (i + 1) % 1 == 0:
+            prior, baseprob, likelihood, likelihood_int = state.prior_prob(), state.param_probabilites(), state.likelihood(), state.likelihood_int()
+            prob = prior + baseprob + likelihood
+            prob_int = prior +likelihood_int
+            if args.trace is None:
+                tracef = sys.stdout
+            else:
+                tracef = open(args.trace, 'a')
+            elapsed = time.clock() - start
+            tracef.write( "> " + str(i + 1) + ":\t" +  str(elapsed) + '\t' + str(round(prior)))
+            if args.explicit:
+                tracef.write('\t' + str(round(baseprob)) + '\t' + str(round(likelihood)))
+            else:
+                tracef.write('\t' + str(round(likelihood_int)))
+            tracef.write('\t' + str(round(prob)))
+            if args.explicit:
+                tracef.write('\t' + str(round(prob_int)))
+            if args.stats:
+                tracef.write('\t' + str(state.numClusters()) + '\t' + state.histogram())
+            tracef.write('\n')
+            if args.trace is not None:
+                tracef.close() 
         
     with open(args.out, 'w') as f:
         for j, item in enumerate(state.assignments):
