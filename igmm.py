@@ -257,6 +257,7 @@ if __name__ == '__main__':
     parser.add_option('-I', '--iter', type=int, default=100, help="number of Gibbs iterations")
     parser.add_option('-k', '--kappa', type=float, default=0.1, help="number of pseudo-observations")
     parser.add_option('-E', '--explicit', action='store_true', help="if set, then sample explicit cluster parameters")
+    parser.add_option('-T', '--trace', help="name of the trace file")
     (args, posit) = parser.parse_args()
     
     data = np.load(args.data)
@@ -271,13 +272,18 @@ if __name__ == '__main__':
         state = IGMMState(vocab, data, con)
     else:
         state = IGMMStateIntegrated(vocab, data, con)
+        
+    if args.trace is None:
+        tracef = sys.stdout
+    else:
+        tracef = open(args.trace)
     
     state.initialize()
     state.resampleParams()
 
     prior, base, ll = state.logprob()
     prob = prior + base + ll
-    sys.stderr.write( "> iter 0:\t" + str(round(prior)) + '\t' + str(round(base)) + '\t'
+    tracef.write( "> iter 0:\t" + str(round(prior)) + '\t' + str(round(base)) + '\t'
                           + str(round(ll)) + '\t' +str(round(prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
     #import pdb; pdb.set_trace()   
     for i in range(args.iter):
@@ -287,9 +293,11 @@ if __name__ == '__main__':
         if (i + 1) % 10 == 0:
             prior, base, ll = state.logprob()
             prob = prior + base + ll
-            sys.stderr.write( "> iter " + str(i+1) + ":\t" + str(round(prior)) + '\t' + str(round(base)) + '\t' 
+            tracef.write( "> iter " + str(i+1) + ":\t" + str(round(prior)) + '\t' + str(round(base)) + '\t' 
                       + str(round(ll)) + '\t' +str(round(prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
             
+    if args.trace is not None:
+        tracef.close()
         
     with open(args.out, 'w') as f:
         for j, item in enumerate(state.assignments):

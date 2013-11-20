@@ -435,6 +435,7 @@ if __name__ == '__main__':
     parser.add_option('-S', '--seq', action="store_true", help="if set, then use sequential CRP")
     parser.add_option('-R', '--rand', action="store_true", help="if set then initialize the followings randomly, otherwise initialize everybody to follow itself")
     parser.add_option('-E', '--explicit', action='store_true', help="if set, then sample explicit cluster parameters")
+    parser.add_option('-T', '--trace', help="name of the trace file")
     (args, opts) = parser.parse_args()
     
     print
@@ -478,6 +479,11 @@ if __name__ == '__main__':
     else:
         state = DDCRPStateIntegrated(vocab, data, con, dist)
     
+    if args.trace is None:
+        tracef = sys.stdout
+    else:
+        tracef = open(args.trace)
+    
     #import pdb; pdb.set_trace()
     state.initialize(args.rand, args.init)
     state.resampleParams()
@@ -486,7 +492,7 @@ if __name__ == '__main__':
     prob = prior + baseprob +  likelihood
     igmm_prior = state.igmm_prior()
     igmm_prob = igmm_prior + baseprob + likelihood
-    sys.stderr.write( "> iter 0:\t" +  str(round(prior)) + '\t' + str(round(baseprob)) + '\t' + str(round(likelihood)) + '\t' + str(round(prob)) + '\t' + str(round(igmm_prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
+    tracef.write( "> iter 0:\t" +  str(round(prior)) + '\t' + str(round(baseprob)) + '\t' + str(round(likelihood)) + '\t' + str(round(prob)) + '\t' + str(round(igmm_prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
     for i in range(args.iter):
         state.resampleData()
         state.resampleParams()
@@ -495,7 +501,10 @@ if __name__ == '__main__':
             prob = prior + baseprob + likelihood
             igmm_prior = state.igmm_prior()
             igmm_prob = igmm_prior + baseprob + likelihood
-            sys.stderr.write("> iter " + str(i+1) +":\t" + str(round(prior)) + '\t' + str(round(baseprob)) + '\t' + str(round(likelihood)) + '\t' + str(round(prob)) + '\t' + str(round(igmm_prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
+            tracef.stderr.write("> iter " + str(i+1) +":\t" + str(round(prior)) + '\t' + str(round(baseprob)) + '\t' + str(round(likelihood)) + '\t' + str(round(prob)) + '\t' + str(round(igmm_prob)) + '\t' + str(state.numClusters()) + '\t' + state.histogram() + '\n')
+
+    if args.trace is not None:
+        tracef.close()
 
     with open(args.out, 'w') as f:
         for i, item in enumerate(state.assignments):
