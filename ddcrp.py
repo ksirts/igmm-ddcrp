@@ -1,3 +1,4 @@
+#! /usr/bin/env python
 '''
 Created on Aug 9, 2013
 
@@ -8,15 +9,14 @@ import math, random
 import numpy as np
 from numpy.linalg import slogdet, cholesky
 from scipy.special import gammaln
-import argparse
+import optparse
 import sys
-from scipy.misc import logsumexp
 
 from common import Constants, MultivariateStudentT
 from common import State
-from common import sampleIndex
+from common import sampleIndex, logsumexp
 
-from choldate import cholupdate, choldowndate
+#from choldate import cholupdate, choldowndate
          
 
         
@@ -419,23 +419,23 @@ if __name__ == '__main__':
     
     #random.seed(1)
     #np.random.seed(1)
-    parser = argparse.ArgumentParser(description='infinite Gaussian Mixture Model')
-    parser.add_argument('-D', '--data', help='data file name')
-    parser.add_argument('-O', '--out', default="hypothesis", help='output file name')
-    parser.add_argument('-V', '--vocab', help='vocabulary file name')
-    parser.add_argument('-a', '--alpha', type=float, default=1.0, help='concentration parameter for DP prior')
-    parser.add_argument('-L', '--Lambda', type=float, default=1.0, help='value for Inverse-Wishart scale matrix diagonal')
-    parser.add_argument('-P', '--pruning', type=int, default=100, help="maximum number of clusters induced")
-    parser.add_argument('-b', type=float, default=1.0, help="exponential distribution parameter for distance prior")
-    parser.add_argument('-I', '--iter', type=int, default=100, help="number of Gibbs iterations")
-    parser.add_argument('-k', '--kappa', type=float, default=0.1, help="number of pseudo-observations")
-    parser.add_argument('-d', '--dist', help='distance matrix file name')
-    parser.add_argument('-i', '--init', help='file with initialized data, one word per line, word and tag separated with tab')
-    parser.add_argument('-t', '--threshold', type=float, default=-10, help="sample only from the elements whose prior exceeds this threshold")
-    parser.add_argument('-S', '--seq', action="store_true", help="if set, then use sequential CRP")
-    parser.add_argument('-R', '--rand', action="store_true", help="if set then initialize the followings randomly, otherwise initialize everybody to follow itself")
-    parser.add_argument('-E', '---explicit', action='store_true', help="if set, then sample explicit cluster parameters")
-    args = parser.parse_args()
+    parser = optparse.OptionParser(description='infinite Gaussian Mixture Model')
+    parser.add_option('-D', '--data', help='data file name')
+    parser.add_option('-O', '--out', default="hypothesis", help='output file name')
+    parser.add_option('-V', '--vocab', help='vocabulary file name')
+    parser.add_option('-a', '--alpha', type=float, default=1.0, help='concentration parameter for DP prior')
+    parser.add_option('-L', '--Lambda', type=float, default=1.0, help='value for Inverse-Wishart scale matrix diagonal')
+    parser.add_option('-P', '--pruning', type=int, default=100, help="maximum number of clusters induced")
+    parser.add_option('-b', type=float, default=1.0, help="exponential distribution parameter for distance prior")
+    parser.add_option('-I', '--iter', type=int, default=100, help="number of Gibbs iterations")
+    parser.add_option('-k', '--kappa', type=float, default=0.1, help="number of pseudo-observations")
+    parser.add_option('-d', '--dist', help='distance matrix file name')
+    parser.add_option('-i', '--init', help='file with initialized data, one word per line, word and tag separated with tab')
+    parser.add_option('-t', '--threshold', type=float, default=-10, help="sample only from the elements whose prior exceeds this threshold")
+    parser.add_option('-S', '--seq', action="store_true", help="if set, then use sequential CRP")
+    parser.add_option('-R', '--rand', action="store_true", help="if set then initialize the followings randomly, otherwise initialize everybody to follow itself")
+    parser.add_option('-E', '--explicit', action='store_true', help="if set, then sample explicit cluster parameters")
+    (args, opts) = parser.parse_args()
     
     print
     print "data file\t:", args.data

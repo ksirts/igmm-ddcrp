@@ -10,11 +10,11 @@ from numpy.linalg import inv, slogdet, cholesky
 from scipy.stats import chi2
 import numpy.random as npr
 from scipy.special import multigammaln, gammaln
-from scipy.misc import logsumexp
+#from scipy.misc import logsumexp
 from numpy import trace, dot, ones
 import numpy as np
 
-from choldate import cholupdate, choldowndate
+#from choldate import cholupdate, choldowndate
 
 '''
 def cholupdate(R,x,sign):
@@ -69,7 +69,7 @@ def sampleIndex(probs):
             return i
     assert False
     
-def mylogsumexp(probs):
+def logsumexp(probs):
     probs = np.array(probs)
     a = np.amax(probs)
     return a + np.log(np.exp(probs - a).sum())

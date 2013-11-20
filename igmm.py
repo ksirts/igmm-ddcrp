@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 '''
 Created on Aug 9, 2013
 
@@ -8,14 +10,14 @@ from __future__ import division
 import math, random
 import numpy as np
 from numpy.linalg import slogdet, cholesky
-import argparse
+import optparse
 import sys
 
 from common import Constants, MultivariateStudentT
 from common import State
 from common import logNormalize, sampleIndex
 
-from choldate import cholupdate, choldowndate
+#from choldate import cholupdate, choldowndate
 
         
 class IGMMState(State):
@@ -245,26 +247,18 @@ class IGMMStateIntegrated(IGMMState):
 if __name__ == '__main__':
     #random.seed(1)
     #np.random.seed(1)
-    parser = argparse.ArgumentParser(description='infinite Gaussian Mixture Model')
-    parser.add_argument('-D', '--data', help='data file name')
-    parser.add_argument('-O', '--out', help='output file name')
-    parser.add_argument('-V', '--vocab', help='vocabulary file name')
-    parser.add_argument('-a', '--alpha', type=float, default=1.0, help='concentration parameter for DP prior')
-    parser.add_argument('-L', '--Lambda', type=float, default=1.0, help='value for Inverse-Wishart scale matrix diagonal')
-    parser.add_argument('-P', '--pruning', type=int, default=100, help="maximum number of clusters induced")
-    parser.add_argument('-I', '--iter', type=int, default=100, help="number of Gibbs iterations")
-    parser.add_argument('-k', '--kappa', type=float, default=0.1, help="number of pseudo-observations")
-    parser.add_argument('-E', '---explicit', action='store_true', help="if set, then sample explicit cluster parameters")
-    args = parser.parse_args()
+    parser = optparse.OptionParser(description='infinite Gaussian Mixture Model')
+    parser.add_option('-D', '--data', help='data file name')
+    parser.add_option('-O', '--out', help='output file name')
+    parser.add_option('-V', '--vocab', help='vocabulary file name')
+    parser.add_option('-a', '--alpha', type=float, default=1.0, help='concentration parameter for DP prior')
+    parser.add_option('-L', '--Lambda', type=float, default=1.0, help='value for Inverse-Wishart scale matrix diagonal')
+    parser.add_option('-P', '--pruning', type=int, default=100, help="maximum number of clusters induced")
+    parser.add_option('-I', '--iter', type=int, default=100, help="number of Gibbs iterations")
+    parser.add_option('-k', '--kappa', type=float, default=0.1, help="number of pseudo-observations")
+    parser.add_option('-E', '--explicit', action='store_true', help="if set, then sample explicit cluster parameters")
+    (args, posit) = parser.parse_args()
     
-    arr = np.array([[4., 2.], [3., 4.]])
-    chol = cholesky(arr).T
-    v = np.array([1., 1.])
-    arr2 = arr + np.outer(v, v)
-    chol2 = cholesky(arr2).T
-    chol3 = chol.copy()
-    cholupdate(chol3, v.copy())
-
     data = np.load(args.data)
     mean = np.mean(data, axis=0)
     if args.vocab:
