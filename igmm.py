@@ -9,11 +9,12 @@ from __future__ import division
 
 import math, random
 import numpy as np
+import scipy as sp
 from numpy.linalg import slogdet
 import optparse
-import sys, time
+import sys, time, subprocess
 
-from common import Constants, MultivariateStudentT
+from common import MultivariateStudentT, Constants
 from common import State
 from common import logNormalize, sampleIndex
 
@@ -238,13 +239,16 @@ if __name__ == '__main__':
     parser.add_option('-O', '--out', help='output file name')
     parser.add_option('-V', '--vocab', help='vocabulary file name')
     parser.add_option('-a', '--alpha', type=float, default=1.0, help='concentration parameter for DP prior')
-    parser.add_option('-L', '--Lambda', type=float, default=1.0, help='value for Inverse-Wishart scale matrix diagonal')
+    parser.add_option('-L', '--Lambda', type=float, default=0.0, help='value for Inverse-Wishart scale matrix diagonal')
     parser.add_option('-P', '--pruning', type=int, default=100, help="maximum number of clusters induced")
     parser.add_option('-I', '--iter', type=int, default=100, help="number of Gibbs iterations")
-    parser.add_option('-k', '--kappa', type=float, default=0.1, help="number of pseudo-observations")
+    parser.add_option('-k', '--kappa', type=float, default=0.01, help="number of pseudo-observations")
     parser.add_option('-E', '--explicit', action='store_true', help="if set, then sample explicit cluster parameters")
     parser.add_option('-T', '--trace', help="name of the trace file")
     parser.add_option('-s', '--stats', action="store_true", help="when set then show number of clusters and cluster histogram in trace")
+    parser.add_option('-e', '--evalscript', help="path to the evaluation script")
+    parser.add_option('-g', '--gold', help="path to the goldstandard file to be used in evaluation script")
+    parser.add_option('-r', '--result', help="path to the file where the evaluation results will be written")
     (args, posit) = parser.parse_args()
     
     data = np.load(args.data)
@@ -253,8 +257,18 @@ if __name__ == '__main__':
         vocab = open(args.vocab).read().split()
     else:
         vocab = map(str, range(data.shape[0]))
+        
+    if args.Lambda == 0:
+        n, d = data.shape
+        lambdaprior = np.zeros((d, d))
+        for i in xrange(n):
+            lambdaprior += np.outer(data[i], data[i])
+        lambdaprior = sp.diag(sp.diag(lambdaprior) / n)
+    else:
+        d = data.shape[1]
+        lambdaprior = np.identity(d, np.float) * args.Lambda
 
-    con = Constants(data.shape[1], mean, args.alpha, args.Lambda, args.pruning, args.kappa)
+    con = Constants(data.shape[1], mean, args.alpha, lambdaprior, args.pruning, args.kappa)
     if args.explicit:
         state = IGMMState(vocab, data, con)
     else:
@@ -297,6 +311,16 @@ if __name__ == '__main__':
     if args.trace is not None:
         tracef.close() 
         
+    if args.evalscript is not None and args.gold is not None and args.result is not None:
+        with open(args.out, 'w') as f:
+            for i, item in enumerate(state.assignments):
+                f.write(vocab[i] + '\t' + str(item) + '\n')
+        parg = [args.evalscript, args.gold, args.out]
+        p = subprocess.Popen(parg, stdout=subprocess.PIPE)
+        res = p.communicate()[0]
+        with open(args.result, 'w') as f:
+            f.write(res) 
+        
     for i in range(args.iter):
         state.resampleData()
         state.resampleParams()
@@ -315,14 +339,24 @@ if __name__ == '__main__':
                 tracef.write('\t' + str(round(baseprob)) + '\t' + str(round(likelihood)))
             else:
                 tracef.write('\t' + str(round(likelihood_int)))
-            tracef.write('\t' + str(round(prob)))
             if args.explicit:
-                tracef.write('\t' + str(round(prob_int)))
+                tracef.write('\t' + str(round(prob)))
+            tracef.write('\t' + str(round(prob_int)))
             if args.stats:
                 tracef.write('\t' + str(state.numClusters()) + '\t' + state.histogram())
             tracef.write('\n')
             if args.trace is not None:
                 tracef.close() 
+                
+            if args.evalscript is not None and args.gold is not None and args.result is not None:
+                with open(args.out, 'w') as f:
+                    for i, item in enumerate(state.assignments):
+                        f.write(vocab[i] + '\t' + str(item) + '\n')
+                parg = [args.evalscript, args.gold, args.out]
+                p = subprocess.Popen(parg, stdout=subprocess.PIPE)
+                res = p.communicate()[0]
+                with open(args.result, 'a') as f:
+                    f.write(res)
         
     with open(args.out, 'w') as f:
         for j, item in enumerate(state.assignments):

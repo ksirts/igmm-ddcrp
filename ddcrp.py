@@ -10,14 +10,13 @@ import numpy as np
 from numpy.linalg import slogdet, cholesky
 from scipy.special import gammaln
 import optparse
-import sys, time
+import sys, time, subprocess
+import scipy as sp
 
 from common import Constants, MultivariateStudentT
 from common import State
 from common import sampleIndex, logsumexp
-
-#from choldate import cholupdate, choldowndate
-         
+      
 
         
 class DDCRPState(State):
@@ -77,16 +76,15 @@ class DDCRPState(State):
                     self.K += 1
         else:
             with open(initfn) as f:
-                i = 0
                 for line in f:
-                    _, tag = line.split()
+                    word, tag = line.split()
+                    i = self.vocab.index(word)
                     tag = int(tag)
                     self.assignments[i] = tag
                     self.counts[tag] += 1
                     self.dd[i] = np.outer(self.data[i], self.data[i])
                     self.s[tag] += self.data[i]
                     self.ss[tag] += self.dd[i]
-                    i += 1
                     self.K = max(self.K, tag+1)
             
             for t in range(self.K):
@@ -404,7 +402,7 @@ if __name__ == '__main__':
     parser.add_option('-O', '--out', default="hypothesis", help='output file name')
     parser.add_option('-V', '--vocab', help='vocabulary file name')
     parser.add_option('-a', '--alpha', type=float, default=1.0, help='concentration parameter for DP prior')
-    parser.add_option('-L', '--Lambda', type=float, default=1.0, help='value for Inverse-Wishart scale matrix diagonal')
+    parser.add_option('-L', '--Lambda', type=float, default=0.0, help='value for Inverse-Wishart scale matrix diagonal')
     parser.add_option('-P', '--pruning', type=int, default=100, help="maximum number of clusters induced")
     parser.add_option('-b', type=float, default=1.0, help="exponential distribution parameter for distance prior")
     parser.add_option('-I', '--iter', type=int, default=100, help="number of Gibbs iterations")
@@ -417,6 +415,9 @@ if __name__ == '__main__':
     parser.add_option('-E', '--explicit', action='store_true', help="if set, then sample explicit cluster parameters")
     parser.add_option('-T', '--trace', help="name of the trace file")
     parser.add_option('-s', '--stats', action="store_true", help="when set then show number of clusters and cluster histogram in trace")
+    parser.add_option('-e', '--evalscript', help="path to the evaluation script")
+    parser.add_option('-g', '--gold', help="path to the goldstandard file to be used in evaluation script")
+    parser.add_option('-r', '--result', help="path to the file where the evaluation results will be written")
     (args, opts) = parser.parse_args()
     
     print
@@ -453,8 +454,18 @@ if __name__ == '__main__':
     pruning = args.pruning
     if pruning == -1:
         pruning = len(vocab)
+        
+    if args.Lambda == 0:
+        n, d = data.shape
+        lambdaprior = np.zeros((d, d))
+        for i in xrange(n):
+            lambdaprior += np.outer(data[i], data[i])
+        lambdaprior = sp.diag(sp.diag(lambdaprior) / n)
+    else:
+        d = data.shape[1]
+        lambdaprior = np.identity(d, np.float) * args.Lambda
     
-    con = Constants(data.shape[1], mean, args.alpha, args.Lambda, pruning, args.kappa, args.b, args.threshold, args.seq)
+    con = Constants(data.shape[1], mean, args.alpha, lambdaprior, pruning, args.kappa, args.b, args.threshold, args.seq)
     if args.explicit:
         state = DDCRPState(vocab, data, con, dist)
     else:
@@ -470,6 +481,7 @@ if __name__ == '__main__':
 
     prior, baseprob, likelihood, likelihood_int = state.prior_prob(), state.param_probabilites(), state.likelihood(), state.likelihood_int()
     prob = prior + baseprob + likelihood
+    prob_int = prior + likelihood_int
     igmm_prior = state.igmm_prior()
     igmm_prob = igmm_prior + baseprob + likelihood
     igmm_int_prob = igmm_prior +likelihood_int
@@ -491,7 +503,10 @@ if __name__ == '__main__':
         tracef.write('\t' + str(round(baseprob)) + '\t' + str(round(likelihood)))
     else:
         tracef.write('\t' + str(round(likelihood_int)))
-    tracef.write('\t' + str(round(prob)))
+    if args.explicit:
+        tracef.write('\t' + str(round(prob)))
+    else:
+        tracef.write('\t' + str(round(prob_int)))
     if args.explicit:
         tracef.write('\t' + str(round(igmm_prob)))
     tracef.write('\t' + str(round(igmm_int_prob)))
@@ -499,18 +514,29 @@ if __name__ == '__main__':
         tracef.write('\t' + str(state.numClusters()) + '\t' + state.histogram())
     tracef.write('\n')
     if args.trace is not None:
-        tracef.close()  
+        tracef.close() 
+        
+    if args.evalscript is not None and args.gold is not None and args.result is not None:
+        with open(args.out, 'w') as f:
+            for i, item in enumerate(state.assignments):
+                f.write(vocab[i] + '\t' + str(item) + '\n')
+        parg = [args.evalscript, args.gold, args.out]
+        p = subprocess.Popen(parg, stdout=subprocess.PIPE)
+        res = p.communicate()[0]
+        with open(args.result, 'w') as f:
+            f.write(res) 
         
     for i in range(args.iter):
         state.resampleData()
         state.resampleParams()
         if (i + 1) % 1 == 0:
             
-            prior, baseprob, likelihood, int_likelihood = state.prior_prob(), state.param_probabilites(), state.likelihood(), state.likelihood_int()
+            prior, baseprob, likelihood, likelihood_int = state.prior_prob(), state.param_probabilites(), state.likelihood(), state.likelihood_int()
             prob = prior + baseprob + likelihood
+            prob_int = prior + likelihood_int
             igmm_prior = state.igmm_prior()
             igmm_prob = igmm_prior + baseprob + likelihood
-            igmm_int_prob = igmm_prior + int_likelihood
+            igmm_int_prob = igmm_prior + likelihood_int
             
             if args.trace is None:
                 tracef = sys.stdout
@@ -522,7 +548,10 @@ if __name__ == '__main__':
                 tracef.write('\t' + str(round(baseprob)) + '\t' + str(round(likelihood)))
             else:
                 tracef.write('\t' + str(round(likelihood_int)))
-            tracef.write('\t' + str(round(prob)))
+            if args.explicit:
+                tracef.write('\t' + str(round(prob)))
+            else:
+                tracef.write('\t' + str(round(prob_int)))
             if args.explicit:
                 tracef.write('\t' + str(round(igmm_prob)))
             tracef.write('\t' + str(round(igmm_int_prob)))
@@ -531,10 +560,19 @@ if __name__ == '__main__':
             tracef.write('\n')
             if args.trace is not None:
                 tracef.close()
-
+            
+            if args.evalscript is not None and args.gold is not None and args.result is not None:
+                with open(args.out, 'w') as f:
+                    for i, item in enumerate(state.assignments):
+                        f.write(vocab[i] + '\t' + str(item) + '\n')
+                parg = [args.evalscript, args.gold, args.out]
+                p = subprocess.Popen(parg, stdout=subprocess.PIPE)
+                res = p.communicate()[0]
+                with open(args.result, 'a') as f:
+                    f.write(res)
     with open(args.out, 'w') as f:
-        for i, item in enumerate(state.assignments):
-            f.write(vocab[i] + '\t' + str(item) + '\n')
+        for j, item in enumerate(state.assignments):
+            f.write(vocab[j] + '\t' + str(item) + '\n')
 
     
 

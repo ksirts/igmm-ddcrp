@@ -132,12 +132,12 @@ def logmvstprob(x, mu, nu, d, Lambda):
     
 class Constants(object):
         
-    def __init__(self, dim, mean, alpha, Lambda, pruning, kappa, a=1, priorth=-10, seq=False):
+    def __init__(self, dim, mean, alpha, scale, pruning, kappa, a=1, priorth=-10, seq=False):
         self.nu0 = dim + 1
         self.mu0 = mean
         self.alpha = alpha
         self.logalpha = math.log(alpha)
-        self.lambda0 = Lambda * np.identity(dim)
+        self.lambda0 = scale
         self.kappa0 = kappa
         self.a = a
         self.pruningfactor = pruning
