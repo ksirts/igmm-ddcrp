@@ -24,7 +24,8 @@ class DDCRPState(State):
     def __init__(self, vocab, data, con, dist):
         super(DDCRPState, self).__init__(vocab, data, con)
         if dist is not None:
-            self.prior = -dist / con.a + math.log(con.alpha) * np.identity(self.n)
+            #self.prior = -dist / con.a + math.log(con.alpha) * np.identity(self.n)
+            self.prior = np.log(dist + con.alpha * np.identity(self.n))
         else:
             self.prior = np.zeros((self.n, self.n)) + math.log(con.alpha) * np.identity(self.n)
         self.follow = -1 * np.ones(self.n, dtype=np.int)
