@@ -302,9 +302,9 @@ if __name__ == '__main__':
         tracef.write('\t' + str(round(baseprob)) + '\t' + str(round(likelihood)))
     else:
         tracef.write('\t' + str(round(likelihood_int)))
-    tracef.write('\t' + str(round(prob)))
     if args.explicit:
-        tracef.write('\t' + str(round(prob_int)))
+        tracef.write('\t' + str(round(prob)))
+    tracef.write('\t' + str(round(prob_int)))
     if args.stats:
         tracef.write('\t' + str(state.numClusters()) + '\t' + state.histogram())
     tracef.write('\n')
