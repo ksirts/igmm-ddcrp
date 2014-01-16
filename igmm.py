@@ -22,32 +22,74 @@ from common import logNormalize, sampleIndex
         
 class IGMMState(State):
     
-    def __init__(self, vocab, data, con):
+    def __init__(self, vocab, data, con, mdist, weights, featfn):
         State.__init__(self, vocab, data, con)
         std_nu = self.con.nu0 - self.d + 1
         std_S = (self.con.kappa0 + 1) / (self.con.kappa0 * std_nu) * self.con.lambda0
         self.mvStudentT = MultivariateStudentT(self.d, std_nu, self.con.mu0, std_S)
         
+        if featfn is not None:
+            '''
+            self.prepareSuffixes(featfn)
+            assert len(self.featlist) == len(weights)
+            self.w = weights
+            
+            self.featsetvals = np.zeros(len(self.featsets))
+            self.setParams()
+            self.prior = np.zeros((self.n, self.n))
+            for i in xrange(self.n-1):
+                for j in xrange(i+1, self.n):
+                    self.prior[i,j] = self.prior[i,j] = -self.featsetvals[self.features[i,j]]
+            for i in xrange(self.n):
+                self.prior[i,i] = self.con.logalpha
+            for i in xrange(self.n):
+                denom = np.log(np.exp(self.prior[i]).sum())
+                self.prior[i] -= denom
+            '''
+            self.prior = np.exp(np.load(featfn + '.distr.npy'))
+            #sys.exit(1)
+        self.mdist = mdist
+        
+        
 
-    def initialize(self):
+    def initialize(self, initfn = None):
         super(IGMMState, self).initialize()
 
         self.integrated = np.zeros(self.n, np.float)
         self.countsgammaln = np.zeros(self.con.pruningfactor, np.float)
-
-        for i in range(self.n):
-            if self.K < self.con.pruningfactor and random.random() < self.con.alpha / (i + self.con.alpha):
-                ind = self.K
-                self.K += 1      
-            else:
-                ind = random.sample(self.assignments[:i], 1)[0]
-                self.countsgammaln[ind] += math.log(self.counts[ind])
-            self.assignments[i] = ind
-            self.counts[ind] += 1
-            self.s[ind] += self.data[i]
-            self.dd[i] = np.outer(self.data[i], self.data[i])
-            self.ss[ind] += self.dd[i]
-            self.integrated[i] = self.mvStudentT(self.data[i])
+        
+        if initfn is None:
+            for i in range(self.n):
+                if self.K < self.con.pruningfactor and random.random() < self.con.alpha / (i + self.con.alpha):
+                    ind = self.K
+                    self.K += 1      
+                else:
+                    ind = random.sample(self.assignments[:i], 1)[0]
+                    self.countsgammaln[ind] += math.log(self.counts[ind])
+                self.assignments[i] = ind
+                self.counts[ind] += 1
+                self.s[ind] += self.data[i]
+                self.dd[i] = np.outer(self.data[i], self.data[i])
+                self.ss[ind] += self.dd[i]
+                self.integrated[i] = self.mvStudentT(self.data[i])
+        else:
+            with open(initfn) as f:
+                for line in f:
+                    word, tag = line.split()
+                    ind = int(tag)
+                    self.K = max(self.K, ind + 1)
+                    i = self.vocab.index(word)
+                    
+                    if self.counts[ind] > 0:
+                        self.countsgammaln[ind] += math.log(self.counts[ind])
+                    self.assignments[i] = ind
+                    self.counts[ind] += 1
+                    self.s[ind] += self.data[i]
+                    self.dd[i] = np.outer(self.data[i], self.data[i])
+                    self.ss[ind] += self.dd[i]
+                    self.integrated[i] = self.mvStudentT(self.data[i])
+                    
+                    
  
         self.probs = np.zeros(self.con.pruningfactor)    
         
@@ -147,8 +189,8 @@ class IGMMState(State):
     
 class IGMMStateIntegrated(IGMMState):
     
-    def initialize(self):
-        super(IGMMStateIntegrated, self).initialize()
+    def initialize(self, initfn=None):
+        super(IGMMStateIntegrated, self).initialize(initfn)
         
         for t in range(self.K):
             #self.denom[t] = self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
@@ -158,9 +200,11 @@ class IGMMStateIntegrated(IGMMState):
             lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
             self.logdet[t] = slogdet(lambdan)[1]
         
+        
     
     def removeItem(self, i):
         t = self.assignments[i]
+        self.assignments[i] = -1
         self.s[t] -= self.data[i]
         self.ss[t] -= self.dd[i]
         self.counts[t] -= 1
@@ -216,7 +260,13 @@ class IGMMStateIntegrated(IGMMState):
         for t in range(self.K):
             prior = math.log(self.counts[t])
             ll = self.posteriorPredictive(set([i]), self.data[i], self.dd[i], t)
-            probs.append(prior + ll)
+            indices = self.getIndices(t)
+            suffprior = np.zeros(len(indices))
+            for j, ind in enumerate(indices):
+                suffprior[j] = self.prior[i, ind]
+            avgprior = np.log(suffprior.sum() / len(indices))
+            
+            probs.append(prior + avgprior + ll)
         if self.K < self.con.pruningfactor:
             prior = self.con.logalpha
 
@@ -224,6 +274,9 @@ class IGMMStateIntegrated(IGMMState):
             probs.append(prior + ll)
         normed = logNormalize(probs)
         return sampleIndex(normed) 
+    
+    def getIndices(self, t):
+        return [j for j in xrange(self.n) if self.assignments[j] == t]
     
 
     def resampleParams(self):
@@ -239,7 +292,7 @@ if __name__ == '__main__':
     parser.add_option('-O', '--out', help='output file name')
     parser.add_option('-V', '--vocab', help='vocabulary file name')
     parser.add_option('-a', '--alpha', type=float, default=1.0, help='concentration parameter for DP prior')
-    parser.add_option('-L', '--Lambda', type=float, default=0.0, help='value for Inverse-Wishart scale matrix diagonal')
+    parser.add_option('-L', '--Lambda', help='value for Inverse-Wishart scale matrix diagonal')
     parser.add_option('-P', '--pruning', type=int, default=100, help="maximum number of clusters induced")
     parser.add_option('-I', '--iter', type=int, default=100, help="number of Gibbs iterations")
     parser.add_option('-k', '--kappa', type=float, default=0.01, help="number of pseudo-observations")
@@ -248,7 +301,12 @@ if __name__ == '__main__':
     parser.add_option('-s', '--stats', action="store_true", help="when set then show number of clusters and cluster histogram in trace")
     parser.add_option('-e', '--evalscript', help="path to the evaluation script")
     parser.add_option('-g', '--gold', help="path to the goldstandard file to be used in evaluation script")
-    parser.add_option('-r', '--result', help="path to the file where the evaluation results will be written")
+    parser.add_option('-w', '--weights', help="path to the weights file")
+    parser.add_option('-f', '--featfn', help="stem for feature files")
+    parser.add_option('-m', '--metric_dist', help="file containing euclidean distances between word embeddings")
+    parser.add_option('-n', '--nu', type=int, default=1, help='value to add to d to form the prior degrees-of-freedom')
+    parser.add_option('-b', type=float, default=1.0, help="exponential distribution parameter for distance prior")
+    parser.add_option('-i', '--init', help='file with initialized data, one word per line, word and tag separated with tab')
     (args, posit) = parser.parse_args()
     
     data = np.load(args.data)
@@ -258,28 +316,50 @@ if __name__ == '__main__':
     else:
         vocab = map(str, range(data.shape[0]))
         
-    if args.Lambda == 0:
+    if args.Lambda is None:
         n, d = data.shape
+        ss = np.zeros((d, d))
+        s = np.zeros(d)
         lambdaprior = np.zeros((d, d))
         for i in xrange(n):
-            lambdaprior += np.outer(data[i], data[i])
-        lambdaprior = sp.diag(sp.diag(lambdaprior) / n)
+            ss += np.outer(data[i], data[i])
+            s += data[i]
+        lambdaprior = (ss - np.outer(s, s) / n) / (n - 1)
     else:
         d = data.shape[1]
-        lambdaprior = np.identity(d, np.float) * args.Lambda
+        lambdaprior = np.load(args.Lambda) * (args.nu - 1)
 
-    con = Constants(data.shape[1], mean, args.alpha, lambdaprior, args.pruning, args.kappa)
+    con = Constants(data.shape[1] + args.nu, mean, args.out, args.alpha, lambdaprior, args.pruning, args.kappa, args.b)
+
+    if args.weights is not None:
+        weights = []
+        with open(args.weights) as f:
+            for line in f:
+                line = line.split()
+                ind, weight = int(line[-2]), float(line[-1])
+                if ind >= len(weights):
+                    weights += (ind - len(weights) + 1) * [0]
+                weights[ind] = weight
+        weights = np.array(weights)
+    else:
+        weights = None
+
+    if args.metric_dist is not None:
+        mdist = np.load(args.metric_dist)
+    else:
+        mdist = None
+
     if args.explicit:
         state = IGMMState(vocab, data, con)
     else:
-        state = IGMMStateIntegrated(vocab, data, con)
+        state = IGMMStateIntegrated(vocab, data, con, mdist, weights, args.featfn)
         
     if args.trace is None:
         tracef = sys.stdout
     else:
         tracef = open(args.trace, 'w')
     
-    state.initialize()
+    state.initialize(args.init)
     state.resampleParams()
         
     prior, baseprob, likelihood, likelihood_int = state.prior_prob(), state.param_probabilites(), state.likelihood(), state.likelihood_int()
@@ -311,15 +391,16 @@ if __name__ == '__main__':
     if args.trace is not None:
         tracef.close() 
         
-    if args.evalscript is not None and args.gold is not None and args.result is not None:
+    if args.out is not None:
         with open(args.out, 'w') as f:
             for i, item in enumerate(state.assignments):
-                f.write(vocab[i] + '\t' + str(item) + '\n')
-        parg = [args.evalscript, args.gold, args.out]
-        p = subprocess.Popen(parg, stdout=subprocess.PIPE)
-        res = p.communicate()[0]
-        with open(args.result, 'w') as f:
-            f.write(res) 
+                f.write(vocab[i] + '\t' + str(item) + '\n')  
+        if args.evalscript is not None and args.gold is not None:
+            parg = [args.evalscript, '-G', args.gold, '-P', args.out]
+            p = subprocess.Popen(parg, stdout=subprocess.PIPE)
+            res = p.communicate()[0]
+            with open(args.out +'.res', 'w') as f:
+                f.write(res) 
         
     for i in range(args.iter):
         state.resampleData()
@@ -347,16 +428,17 @@ if __name__ == '__main__':
             tracef.write('\n')
             if args.trace is not None:
                 tracef.close() 
-                
-            if args.evalscript is not None and args.gold is not None and args.result is not None:
+            
+            if args.out is not None:
                 with open(args.out, 'w') as f:
                     for i, item in enumerate(state.assignments):
-                        f.write(vocab[i] + '\t' + str(item) + '\n')
-                parg = [args.evalscript, args.gold, args.out]
-                p = subprocess.Popen(parg, stdout=subprocess.PIPE)
-                res = p.communicate()[0]
-                with open(args.result, 'a') as f:
-                    f.write(res)
+                        f.write(vocab[i] + '\t' + str(item) + '\n')  
+                if args.evalscript is not None and args.gold is not None:
+                    parg = [args.evalscript, '-G', args.gold, '-P', args.out]
+                    p = subprocess.Popen(parg, stdout=subprocess.PIPE)
+                    res = p.communicate()[0]
+                    with open(args.out +'.res', 'a') as f:
+                        f.write(res)
         
     with open(args.out, 'w') as f:
         for j, item in enumerate(state.assignments):

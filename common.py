@@ -16,25 +16,6 @@ import numpy as np
 
 #from choldate import cholupdate, choldowndate
 
-'''
-def cholupdate(R,x,sign):
-    p = np.size(x)
-    x = x.T[0]
-    for k in range(p):
-        if sign == '+':
-            r = np.sqrt(R[k,k]**2 + x[k]**2)
-        elif sign == '-':
-            r = np.sqrt(R[k,k]**2 - x[k]**2)
-        c = r/R[k,k]
-        s = x[k]/R[k,k]
-        R[k,k] = r
-        if sign == '+':
-            R[k,k+1:p] = (R[k,k+1:p] + s*x[k+1:p])/c
-        elif sign == '-':
-            R[k,k+1:p] = (R[k,k+1:p] - s*x[k+1:p])/c
-        x[k+1:p]= c*x[k+1:p] - s*R[k, k+1:p]
-    return R
-'''
 
 def invwishartrand(nu, phi):
     invphi = inv(phi)
@@ -132,11 +113,11 @@ def logmvstprob(x, mu, nu, d, Lambda):
     
 class Constants(object):
         
-    def __init__(self, dim, mean, alpha, scale, pruning, kappa, a=1, priorth=-10, seq=False):
-        self.nu0 = dim + 1
+    def __init__(self, nu, mean, out, alpha, scale, pruning, kappa, a=1, priorth=-10, seq=False):
+        self.nu0 = nu
         self.mu0 = mean
-        self.alpha = alpha
-        self.logalpha = math.log(alpha)
+        self.alpha = alpha ** a
+        self.logalpha = math.log(alpha) * a
         self.lambda0 = scale
         self.kappa0 = kappa
         self.a = a
@@ -148,6 +129,7 @@ class Constants(object):
         self.logdet = slogdet(self.lambda0)[1]
         #self.precision = self.kappa0 * (self.nu0 - dim - 1) / (self.kappa0 + 1) * self.invlambda0
         self.changeParams = 10
+        self.out = out
 
 
 class State(object):
@@ -157,7 +139,6 @@ class State(object):
         self.n, self.d = data.shape
         self.vocab = vocab
         self.con = con
-        self.assignments = -1 * ones(self.n, dtype=np.int)
         self.loginvWishartPdf = LoginvWishartPdf(con.lambda0, con.nu0)
         self.mvNormalLL = MultivariateNormalLikelihood(self.d)
         
@@ -211,9 +192,46 @@ class State(object):
             ll += gammaln((nun + 1 - j) / 2) - gammaln((self.con.nu0 + 1 - j) / 2)
         return ll
     
-    def posteriorPredictive(self, followset, s_, ss_, t):
-
-        n = len(followset)
+    def printPosteriorVariance(self, f, t):
+        kappan = self.con.kappa0 + self.counts[t]
+        mun = (self.con.kappa0 * self.con.mu0 + self.s[t]) / kappan
+        lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
+        nun = self.con.nu0 + self.counts[t]
+        var = lambdan / (nun - self.d - 1)
+        res = ""
+        for i in range(self.d):
+            for j in range(self.d):
+                res += str(round(var[i, j], 2)) + "\t"
+            res = res.strip()
+            res += '\n'
+        res += '\n'
+        header = str(t) + " : " + str(self.counts[t]) + '\n'
+        f.write(header)
+        sumdiag = np.sum(np.diag(var))
+        row = "trace of cov: " + str(round(sumdiag, 2)) + '\n'
+        f.write(row)
+        row = "scaled by cluster size: " + str(round(sumdiag * self.counts[t], 2)) + '\n'
+        f.write(row)
+        avgoffdiag = np.sum(var - np.diag(np.diag(var))) / (self.d * (self.d-1))
+        row = "avg off-diagonal: " + str(round(avgoffdiag, 2)) + '\n'
+        f.write(row)
+        f.write(res)
+        
+    def posterorVariance(self, t):
+        kappan = self.con.kappa0 + self.counts[t]
+        mun = (self.con.kappa0 * self.con.mu0 + self.s[t]) / kappan
+        lambdan = self.con.lambda0 + self.ss[t] + self.con.kappa0_outermu0 - kappan * np.outer(mun, mun)
+        nun = self.con.nu0 + self.counts[t]
+        var = lambdan / (nun - self.d - 1)
+        return var
+    
+    def sampleVariance(self, t):
+        Q = self.ss[t] - np.outer(self.s[t], self.s[t]) / self.counts[t]
+        mean = Q/ (self.counts[t] - 1)
+        return mean
+        
+    
+    def posteriorPredictive(self, n, s_, ss_, t):
         s = self.s[t] + s_
         ss = self.ss[t] + ss_
         
@@ -273,3 +291,32 @@ class State(object):
         for t in range(self.K):
             ll += self.integrateOverParameters(self.counts[t], self.s[t], self.ss[t])
         return ll
+    
+    def prepareSuffixes(self, featfn):
+        self.featlist = []
+        with open(featfn + '.featlist') as f:
+            for line in f:
+                self.featlist.append(line.strip())
+        
+        self.w = np.zeros(len(self.featlist))
+
+        self.featsets = []
+        with open(featfn + '.featsets') as f:
+            for line in f:
+                self.featsets.append(map(int, line.split()))
+
+        self.features = np.load(featfn + '.feats.npy')
+        
+        self.featcounts = []
+        for i in range(self.n):
+            counts = np.bincount(self.features[i])
+            counts[0] -= 1
+            ii = np.nonzero(counts)[0]
+            self.featcounts.append(zip(ii, counts[ii]))
+            
+    def setParams(self):
+        for i in range(len(self.featsets)):
+            term = 0.0
+            for f in self.featsets[i]:
+                term += self.w[f]
+            self.featsetvals[i] = term
